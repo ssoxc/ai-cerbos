@@ -547,7 +547,9 @@ def decide(db: Session, persona: User, change: dict) -> dict[str, dict]:
         item = _resource(db, capability, persona, change)
         if item is None:
             continue
-        result = explain(principal, [item], [capability.action]).get(item["id"], {})
+        result = explain(principal, [item], [capability.action], source="playground").get(
+            item["id"], {}
+        )
         decisions[capability.id] = result.get(capability.action) or {
             "effect": "deny",
             "policy": "",

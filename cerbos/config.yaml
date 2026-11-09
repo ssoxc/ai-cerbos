@@ -9,9 +9,19 @@ storage:
     directory: /policies
     watchForChanges: true
 audit:
+  # Cerbos's own record of every decision: principal, resource, actions, effect, the rule
+  # that decided (with its reason and obligations) and who asked. Written as JSON lines to a
+  # shared volume; the API reads it read-only for the governance metrics page.
   enabled: true
-  accessLogsEnabled: true
+  accessLogsEnabled: false
   decisionLogsEnabled: true
-  backend: local
-  local:
-    storagePath: /tmp/cerbos-audit
+  # Callers tag each check with X-Ai-Spine-Source: api, gateway, litellm, dashboard, playground
+  # or probe (see backend/app/policy.py).
+  includeMetadataKeys: ["x-ai-spine-source"]
+  backend: file
+  file:
+    path: /audit/decisions.log
+    logRotation:
+      maxFileAgeDays: 30
+      maxFileCount: 10
+      maxFileSizeMB: 50

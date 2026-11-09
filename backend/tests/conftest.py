@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.config import settings
 from app.db import Base, SessionLocal, engine
 from app.main import app
 from app.seed import seed
@@ -34,3 +35,11 @@ def sign_in(client):
         assert client.post("/api/session", json={"user_id": user_id}).status_code == 200
 
     return login
+
+
+@pytest.fixture(autouse=True)
+def ledger_token(monkeypatch):
+    """The token LiteLLM's guard presents to the internal ledger API."""
+    token = settings().ledger_token or "test-ledger-token"
+    monkeypatch.setattr(settings(), "ledger_token", token)
+    return token

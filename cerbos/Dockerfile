@@ -4,3 +4,7 @@ COPY config.yaml /config/config.yaml
 # holds the live, editable copy; the test stack uses these baked files unchanged.
 # Owned by the API's uid so the API can write to a volume Docker seeds from this image.
 COPY --chown=10001:10001 policies /policies
+# Cerbos's decision log directory, also a shared volume (read-only for the API).
+COPY --chown=10001:10001 audit /audit
+# Run unprivileged, as the same uid as the API, so the API can read the decision log.
+USER 10001:10001

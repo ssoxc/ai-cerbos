@@ -34,6 +34,8 @@ services:
       # Live policies, edited from the dashboard's Cerbos playground. Read-only here:
       # only the API writes, after validating with the Cerbos CLI.
       - policies_live:/policies:ro
+      # Cerbos's decision log, read by the API for the governance metrics page.
+      - cerbos_audit:/audit
     healthcheck:
       # The image has no shell; the binary ships its own health probe.
       test: ["CMD", "/cerbos", "healthcheck"]
@@ -75,8 +77,11 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       MOCK_PROVIDER_KEY: ${MOCK_PROVIDER_KEY}
       STORE_MODEL_IN_DB: "False"
-      # infra/cerbos_guard.py asks Cerbos before every model call.
+      # infra/cerbos_guard.py asks Cerbos before every model call, then reserves and
+      # settles budget through the AI spine's ledger, so direct calls cannot overspend.
       CERBOS_URL: http://cerbos:3592
+      LEDGER_URL: http://api:8000
+      LEDGER_TOKEN: ${LEDGER_TOKEN}
     depends_on:
       postgres: {condition: service_healthy}
       cerbos: {condition: service_healthy}
@@ -99,12 +104,15 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      LEDGER_TOKEN: ${LEDGER_TOKEN}
       DEMO_MODE: ${DEMO_MODE:-true}
       ALLOWED_ORIGIN: http://localhost:${DEMO_PORT:-5173}
       POLICIES_DIR: /policies
       SHIPPED_POLICIES_DIR: /app/shipped-policies
+      CERBOS_DECISION_LOG: /audit/decisions.log
     volumes:
       - policies_live:/policies
+      - cerbos_audit:/audit:ro
     depends_on:
       postgres: {condition: service_healthy}
       cerbos: {condition: service_healthy}
@@ -153,6 +161,7 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       MOCK_PROVIDER_KEY: ${MOCK_PROVIDER_KEY}
+      LEDGER_TOKEN: ${LEDGER_TOKEN}
       # Used by scripts/smoke.py, which drives the running demo through its web server.
       BASE_URL: http://frontend
     depends_on:
@@ -162,3 +171,4 @@ services:
 volumes:
   postgres_data:
   policies_live:
+  cerbos_audit:

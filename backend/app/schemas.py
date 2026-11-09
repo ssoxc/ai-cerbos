@@ -102,7 +102,8 @@ class Completion(StrictModel):
     model: Literal["governed-demo", "governed-premium"]
     messages: list[Message] = Field(min_length=1, max_length=32)
     max_tokens: int = Field(ge=1, le=2048)
-    stream: Literal[False] = False
+    # Streamed answers are billed when the stream ends, from the provider's final usage.
+    stream: bool = False
     # How sensitive the prompt is. LiteLLM's Cerbos guard uses it to decide which models
     # may receive it (cerbos/policies/model.yaml).
     data_classification: Literal["public", "internal", "confidential"] = "internal"
@@ -110,5 +111,7 @@ class Completion(StrictModel):
     def litellm_body(self):
         """The OpenAI-compatible body LiteLLM receives; the classification travels as metadata."""
         body = self.model_dump(exclude={"data_classification"})
+        if self.stream:
+            body["stream_options"] = {"include_usage": True}
         body["metadata"] = {"data_classification": self.data_classification}
         return body

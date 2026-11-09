@@ -328,7 +328,7 @@ summary:focus-visible {
   margin: 0 7px;
 }
 .identity-control {
-  max-width: 195px;
+  max-width: 300px;
 }
 .identity-control > strong {
   font-size: 11px;
@@ -344,7 +344,8 @@ summary:focus-visible {
 .persona-select > select {
   font-size: 11px;
   padding-left: 0;
-  max-width: 190px;
+  max-width: 295px;
+  text-overflow: ellipsis;
   color: #71786f;
 }
 .persona-select::after {
@@ -2728,4 +2729,23 @@ th:first-child {
   .sidebar.open {
     transition: none;
   }
+}
+
+/* Demo mode: who may approve a pending request, with a one-click persona switch. */
+.approvers-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #5f6b62;
+}
+.approvers-line .fui-Button {
+  font-size: 11px;
+  min-width: 0;
+}
+.approver-you {
+  font-weight: 600;
+  color: #215c49;
 }

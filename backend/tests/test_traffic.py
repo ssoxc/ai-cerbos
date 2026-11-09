@@ -16,6 +16,8 @@ EXPECTED = {
     "premium-long": {"alex": "downgraded", "sam": "capped", "riley": "downgraded"},
     "confidential": {"alex": "refused", "sam": "answered", "riley": "refused"},
     "bypass": {"alex": "refused", "sam": "refused", "riley": "refused"},
+    "bypass-billed": {"alex": "answered", "sam": "answered", "riley": "answered"},
+    "streamed": {"alex": "answered", "sam": "answered", "riley": "answered"},
     "catalog": {"alex": "hidden", "sam": "listed", "riley": "hidden"},
     "mcp-read": {"alex": "called", "sam": "called", "riley": "called"},
     "mcp-write": {"alex": "refused", "sam": "called", "riley": "refused"},

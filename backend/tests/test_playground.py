@@ -166,3 +166,19 @@ def test_a_principal_without_roles_is_explained_not_reported_as_an_outage(client
     response = client.post("/api/playground/check", json=body)
     assert response.status_code == 422
     assert "at least one role" in response.json()["detail"]
+
+
+def test_persona_list_names_teams_and_departments(client):
+    people = {p["id"]: p for p in client.get("/api/demo-users").json()}
+    assert people["sam"]["team_names"] == ["Agents & Automation"]
+    assert people["sam"]["department_names"] == ["Technology"]
+    assert people["morgan"]["admin_team_names"] == ["Platform Engineering", "Agents & Automation"]
+    assert people["casey"]["department_names"] == ["Human Resources"]
+
+
+def test_pending_approvals_name_who_can_approve(client, sign_in):
+    sign_in("alex")
+    approvals = {a["id"]: a for a in client.get("/api/state").json()["approvals"]}
+    approvers = {p["id"] for p in approvals["request-atlas-key"]["approvers"]}
+    assert "sam" in approvers  # The Agents team's key approver.
+    assert "alex" not in approvers  # Nobody approves their own request.

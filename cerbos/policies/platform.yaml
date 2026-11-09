@@ -20,6 +20,14 @@ resourcePolicy:
         when:
           ruleActivated: '"Administrative roles see budgets and the organization structure."'
 
+    - name: metrics-for-admins
+      actions: [view_metrics]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin, cost_center_admin, executive_admin, finance_admin]
+      output:
+        when:
+          ruleActivated: '"Administrative roles see governance metrics: Cerbos decisions, AI traffic and spend."'
+
     - name: audit-and-policies-for-everyone
       actions: [view_audit, view_policies]
       effect: EFFECT_ALLOW

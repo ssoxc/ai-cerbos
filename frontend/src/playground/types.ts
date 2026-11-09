@@ -251,6 +251,7 @@ export type TrafficOutcome =
   | "downgraded"
   | "capped"
   | "refused"
+  | "over_budget"
   | "listed"
   | "hidden"
   | "called"
@@ -265,6 +266,8 @@ export type TrafficCell = {
   steps?: TraceStep[];
   visible?: string[];
   result?: string;
+  /** Streamed through the gateway; the ledger charged it when the stream ended. */
+  streamed?: boolean;
 };
 
 export type Traffic = {
@@ -275,3 +278,6 @@ export type Traffic = {
   calls: number;
   seconds: number;
 };
+
+/** GET/PUT /api/playground/team-budget: People Operations' cap set to what it has spent. */
+export type TeamBudget = { team: string; on: boolean; limit_micros: number; spent_micros: number };

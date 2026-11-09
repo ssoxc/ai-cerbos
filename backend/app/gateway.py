@@ -1,4 +1,10 @@
-"""Only this gateway is exposed. LiteLLM and the provider have no published ports."""
+"""The governed gateway: the public entry point for AI calls.
+
+The gateway checks the key, asks Cerbos whether the owner may use the agent, and makes
+retries idempotent. The money is not kept here: LiteLLM's Cerbos guard reserves and
+settles budget through the ledger (app/ledger.py) for every call, including calls that
+skip this gateway, so no path can spend past a cap.
+"""
 
 import hashlib
 import json
@@ -8,24 +14,22 @@ from datetime import timedelta
 import httpx
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 
+from . import ledger
 from .config import settings
 from .db import SessionLocal
-from .events import bus
-from .models import ApiKey, Asset, Budget, Reservation, User, now, uid
+from .ledger import PRICING, LedgerRefusal, actual_cost, lock_mutation  # noqa: F401
+from .models import ApiKey, Asset, Reservation, User, now, uid
 from .policy import asset_resource, explain, principal
 
-# Micro-USD per token. Mirrors infra/litellm.yaml; premium costs five times as much.
-PRICING = {
-    "governed-demo": {"input": 10, "output": 30},
-    "governed-premium": {"input": 50, "output": 150},
-}
 MODEL_TIERS = {"governed-demo": "standard", "governed-premium": "premium"}
 MODELS = list(PRICING)
 # MCP servers proxied by LiteLLM (infra/litellm.yaml).
 MCP_SERVERS = ["knowledge"]
 GUARD_MARKER = "cerbos_guard"
+BUDGET_STEP = "Budget inside LiteLLM: reserve at every level"
+CERBOS_STEP = "Cerbos inside LiteLLM: may this key invoke this model?"
 logger = logging.getLogger(__name__)
 
 
@@ -35,15 +39,6 @@ def cipher():
 
 def token_hash(token):
     return hashlib.sha256(token.encode()).hexdigest()
-
-
-def lock_mutation(db):
-    # Global first, for every monetary/mutable authorization operation. This favors
-    # correctness over throughput in the POC and avoids lock-order deadlocks.
-    budget = db.scalar(select(Budget).where(Budget.id == "organization").with_for_update())
-    if not budget:
-        raise HTTPException(503, "Organization budget is not configured")
-    return budget
 
 
 def lite_request(path, payload):
@@ -159,34 +154,33 @@ def generate_upstream_key(*, name, owner, asset, amount, rpm, tpm, days, extra_m
     )
 
 
-def maximum_cost(body):
-    # Supported models have byte-based input metering and a hard output token limit.
-    # No tools, images, n>1, retries, streaming, or hidden tokens. Real providers must
-    # be added with a verified tokenizer/pricing contract.
-    price = PRICING.get(body.model)
-    if price is None:
-        raise HTTPException(422, "This model has no configured price")
-    input_tokens = sum(len(m.content.encode("utf-8")) + 16 for m in body.messages) + 32
-    if input_tokens > 16000:
-        raise HTTPException(422, "Input exceeds the supported context limit")
-    return (
-        input_tokens * price["input"] + body.max_tokens * price["output"],
-        input_tokens + body.max_tokens,
+def input_tokens(body):
+    return ledger.estimate_input_tokens(
+        sum(len(m.content.encode("utf-8")) for m in body.messages), len(body.messages)
     )
 
 
-def actual_cost(model, input_used, output_used):
-    price = PRICING[model]
-    return input_used * price["input"] + output_used * price["output"]
+def maximum_cost(body):
+    """The most this request can cost, as the ledger inside LiteLLM will reserve it."""
+    # Supported models have byte-based input metering and a hard output token limit.
+    # No tools, images, n>1, retries or hidden tokens; streams settle from final usage. Real providers must
+    # be added with a verified tokenizer/pricing contract.
+    tokens = input_tokens(body)
+    try:
+        return ledger.maximum_cost(body.model, tokens, body.max_tokens), tokens + body.max_tokens
+    except LedgerRefusal as refusal:
+        raise HTTPException(refusal.status, refusal.reason) from None
 
 
-def forward_completion(token, body):
+def forward_completion(token, body, metadata=None):
     """Send the request to LiteLLM. Returns the JSON body and LiteLLM's response headers."""
+    payload = body.litellm_body()
+    payload["metadata"].update(metadata or {})
     with httpx.Client(timeout=60) as client:
         response = client.post(
             f"{settings().litellm_url}/v1/chat/completions",
             headers={"Authorization": f"Bearer {token}"},
-            json=body.litellm_body(),
+            json=payload,
         )
         response.raise_for_status()
         return response.json(), dict(response.headers)
@@ -217,12 +211,13 @@ def answered_model(result, headers, requested):
 def guard_rejection(error):
     """Return the Cerbos guard's decision if LiteLLM rejected the call before any provider.
 
-    Only a 403/503 whose error message is the guard's own JSON qualifies. Every other
-    failure leaves the provider outcome uncertain.
+    Only an error whose message is the guard's own JSON qualifies: a Cerbos refusal or a
+    ledger refusal (kind "budget"). Every other failure leaves the provider outcome
+    uncertain.
     """
     if not isinstance(error, httpx.HTTPStatusError):
         return None
-    if error.response.status_code not in (403, 503):
+    if not (400 <= error.response.status_code < 500 or error.response.status_code == 503):
         return None
     try:
         message = error.response.json()["error"]["message"]
@@ -233,6 +228,7 @@ def guard_rejection(error):
         return None
     return {
         "status": error.response.status_code,
+        "kind": str(decision.get("kind") or "model"),
         "rule": decision.get("rule"),
         "reason": str(decision.get("reason") or ""),
         "resource": str(decision.get("resource") or ""),
@@ -270,10 +266,10 @@ def step(trace, name, status, **detail):
         trace.append({"name": name, "status": status, **detail})
 
 
-def complete(token, body, idempotency_key, trace=None):
-    """Run one governed completion. When `trace` is a list, every step is recorded in it."""
+def _admit(token, body, idempotency_key, trace):
+    """The gateway's own checks. Returns (stored answer to replay or None, context)."""
     fingerprint = hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True).encode()).hexdigest()
-    amount, token_count = maximum_cost(body)
+    maximum_cost(body)  # Unpriced models and oversized input fail before anything else.
     with SessionLocal() as db:
         key = db.scalar(select(ApiKey).where(ApiKey.token_hash == token_hash(token)))
         if not key or key.status != "active" or key.expires_at <= now():
@@ -282,13 +278,13 @@ def complete(token, body, idempotency_key, trace=None):
             )
             raise HTTPException(401, "API key is invalid, expired, or revoked")
         owner, asset = db.get(User, key.owner_id), db.get(Asset, key.asset_id)
-        if not owner or not owner.active or not asset:
+        if not owner or not owner.active or not asset or asset.status != "active":
             step(trace, "Authenticate API key", "deny", reason="Owner or agent is unavailable.")
             raise HTTPException(403, "API key owner or agent is unavailable")
         step(trace, "Authenticate API key", "ok", detail=f"{key.name} · owner {owner.name}")
-        # Authorization is evaluated before any row lock is taken so Cerbos latency
-        # never stalls other gateway requests or control-plane mutations.
-        decision = explain(principal(owner), [asset_resource(asset)], ["use"])[asset.id]["use"]
+        decision = explain(principal(owner), [asset_resource(asset)], ["use"], source="gateway")[
+            asset.id
+        ]["use"]
         step(
             trace,
             "Cerbos in the gateway: may the owner use this agent?",
@@ -302,232 +298,221 @@ def complete(token, body, idempotency_key, trace=None):
         if body.model not in key.models:
             step(trace, "Key model list", "deny", reason="This key was not issued for this model.")
             raise HTTPException(403, "This key cannot access the requested model")
-        lock_mutation(db)
-        db.expire_all()  # Re-read every row under the lock.
-        key = db.scalar(select(ApiKey).where(ApiKey.id == key.id).with_for_update())
-        if not key or key.status != "active" or key.expires_at <= now():
-            raise HTTPException(401, "API key is invalid, expired, or revoked")
-        if asset.status != "active":
-            raise HTTPException(403, "API key owner or agent is unavailable")
         existing = db.scalar(
             select(Reservation).where(
                 Reservation.key_id == key.id, Reservation.idempotency_key == idempotency_key
             )
         )
         if existing:
+            if body.stream:
+                raise HTTPException(
+                    409, "Streamed answers are not replayed; send a new Idempotency-Key"
+                )
             if existing.fingerprint != fingerprint:
                 raise HTTPException(409, "Idempotency key was already used for a different request")
             if existing.status == "settled" and existing.response:
                 step(trace, "Idempotent replay", "ok", detail="Returned the stored response.")
-                return existing.response
+                return existing.response, None
             raise HTTPException(
                 409,
                 "This request is in flight or requires reconciliation; it will not be sent again",
             )
-        count, tokens = db.execute(
-            select(func.count(), func.coalesce(func.sum(Reservation.tokens), 0)).where(
-                Reservation.key_id == key.id, Reservation.created_at >= now() - timedelta(minutes=1)
-            )
-        ).one()
-        if count >= key.rpm or tokens + token_count > key.tpm:
-            step(trace, "Key rate limit", "deny", reason="Requests or tokens per minute exceeded.")
-            raise HTTPException(429, "API key rate limit reached; retry after the current minute")
-        ids = [
-            "organization",
-            f"department:{key.department_id}",
-            f"asset:{asset.id}",
-            f"key:{key.id}",
-        ]
-        if key.team_id:
-            ids.append(f"team:{key.team_id}")
-        budgets = db.scalars(
-            select(Budget).where(Budget.id.in_(ids)).order_by(Budget.id).with_for_update()
-        ).all()
-        if len(budgets) != len(ids):
-            raise HTTPException(503, "A required budget is missing; request blocked")
-        for budget in budgets:
-            if budget.spent_micros + budget.reserved_micros + amount > budget.limit_micros:
-                step(
-                    trace,
-                    "Reserve budget at every level",
-                    "deny",
-                    reason=f"{budget.scope.capitalize()} budget has insufficient unreserved funds.",
-                )
-                raise HTTPException(
-                    429, f"{budget.scope.capitalize()} budget has insufficient unreserved funds"
-                )
-        for budget in budgets:
-            budget.reserved_micros += amount
-        reservation = Reservation(
-            key_id=key.id,
-            idempotency_key=idempotency_key,
-            fingerprint=fingerprint,
-            budget_ids=ids,
-            amount_micros=amount,
-            tokens=token_count,
+        key_id, guard_principal = key.id, key_principal(key)
+
+    # LiteLLM's Cerbos guard decides, applies obligations, then reserves budget at every
+    # level through the ledger before any provider is called.
+    return None, {
+        "key_id": key_id,
+        "principal": guard_principal,
+        "metadata": {
+            "idempotency_key": idempotency_key,
+            "fingerprint": fingerprint,
+            "gateway_signature": ledger.gateway_signature(key_id, idempotency_key),
+        },
+        "detail": f"principal {guard_principal['id']} · resource model:{body.model}"
+        f" · max_tokens {body.max_tokens} · {body.data_classification} data",
+    }
+
+
+def _litellm_failure(error, trace, request_detail):
+    """Turn a failed LiteLLM call into the right HTTP error, recording why in the trace."""
+    rejection = guard_rejection(error)
+    if rejection and rejection["kind"] == "budget":
+        step(trace, CERBOS_STEP, "allow", detail=request_detail)
+        step(trace, BUDGET_STEP, "deny", reason=rejection["reason"])
+        return HTTPException(rejection["status"], rejection["reason"])
+    if rejection:
+        step(
+            trace,
+            CERBOS_STEP,
+            "deny",
+            rule=rejection["rule"],
+            reason=rejection["reason"],
+            detail=request_detail,
         )
-        db.add(reservation)
-        db.flush()
-        reservation_id, owner_id, dept_id, team_id = (
-            reservation.id,
-            owner.id,
-            key.department_id,
-            key.team_id,
+        step(trace, BUDGET_STEP, "skipped", detail="Refused before any budget was reserved.")
+        return HTTPException(
+            rejection["status"], f"Cerbos inside LiteLLM denied this call: {rejection['reason']}"
         )
-        guard_principal = key_principal(key)
-        bus.emit(
-            db, "budget.reserved", owner.id, reservation.id, dept_id, team_id, amount_micros=amount
-        )
-        db.commit()
-    step(
-        trace,
-        "Reserve budget at every level",
-        "ok",
-        detail=f"Reserved the maximum possible cost (${amount / 1_000_000:.6f}) on "
-        + ", ".join(ids),
+    # An HTTP timeout/error does NOT prove that a provider did not charge. The ledger
+    # inside LiteLLM keeps the reservation; this request is never retried automatically.
+    step(trace, "Provider", "error", reason="Outcome uncertain; funds stay reserved.")
+    return HTTPException(
+        502,
+        "The provider outcome is uncertain. Funds remain reserved and this request will not be retried automatically.",
     )
 
+
+def open_stream(token, body, metadata):
+    """Start a streamed completion at LiteLLM: (headers, raw chunks).
+
+    LiteLLM's Cerbos guard decides and reserves budget before the first byte, so a refusal
+    arrives as an ordinary error response and is raised here, before anything is streamed.
+    """
+    client = httpx.Client(timeout=httpx.Timeout(60, connect=10))
+    payload = body.litellm_body()
+    payload["metadata"].update(metadata)
     try:
-        result, response_headers = forward_completion(token, body)
+        response = client.send(
+            client.build_request(
+                "POST",
+                f"{settings().litellm_url}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {token}"},
+                json=payload,
+            ),
+            stream=True,
+        )
+        if response.status_code >= 400:
+            response.read()
+            response.close()
+            response.raise_for_status()
+    except BaseException:
+        client.close()
+        raise
+
+    def chunks():
+        try:
+            yield from response.iter_raw()
+        finally:  # A client that disconnects closes this, and LiteLLM holds the funds.
+            response.close()
+            client.close()
+
+    return dict(response.headers), chunks()
+
+
+def stream_completion(token, body, idempotency_key, trace=None):
+    """Admit a streamed completion and start it: (LiteLLM headers, chunks, context).
+
+    The ledger inside LiteLLM settles the real cost from the stream's final usage chunk,
+    before the stream ends. Streamed answers are not stored, so they are never replayed.
+    """
+    _, context = _admit(token, body, idempotency_key, trace)
+    try:
+        headers, chunks = open_stream(token, body, context["metadata"])
+    except httpx.HTTPError as error:
+        raise _litellm_failure(error, trace, context["detail"]) from None
+    if trace is not None:
+        decision = cerbos_headers(headers)
+        step(
+            trace,
+            CERBOS_STEP,
+            "allow",
+            rule=decision["rule"],
+            reason=decision["reason"],
+            obligations=decision["obligations"],
+            detail=context["detail"],
+        )
+        reserved = headers.get("x-ai-spine-reserved-micros") or "0"
+        step(
+            trace,
+            BUDGET_STEP,
+            "ok",
+            detail=f"Reserved the maximum possible cost (${int(reserved) / 1_000_000:.6f}) "
+            "on every budget level before the stream started",
+        )
+    return headers, chunks, context
+
+
+def ledger_entry(key_id, idempotency_key):
+    """The reservation the ledger inside LiteLLM made for this call, if any."""
+    with SessionLocal() as db:
+        return db.scalar(
+            select(Reservation).where(
+                Reservation.key_id == key_id, Reservation.idempotency_key == idempotency_key
+            )
+        )
+
+
+def complete(token, body, idempotency_key, trace=None):
+    """Run one governed completion. When `trace` is a list, every step is recorded in it."""
+    if body.stream:
+        raise HTTPException(422, "Use stream_completion for streamed requests")
+    replay, context = _admit(token, body, idempotency_key, trace)
+    if replay is not None:
+        return replay
+    key_id, guard_principal = context["key_id"], context["principal"]
+    cerbos_step, request_detail = CERBOS_STEP, context["detail"]
+    try:
+        result, response_headers = forward_completion(token, body, context["metadata"])
         model_used = answered_model(result, response_headers, body.model)
-        usage = result["usage"]
-        input_used, output_used = usage["prompt_tokens"], usage["completion_tokens"]
-        if (
-            type(input_used) is not int
-            or type(output_used) is not int
-            or min(input_used, output_used) < 0
-        ):
-            raise ValueError("Invalid usage")
-        actual = actual_cost(model_used, input_used, output_used)
-        if actual > amount or output_used > body.max_tokens:
-            raise ValueError("Provider exceeded the supported cost contract")
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
-        rejection = guard_rejection(error)
-        if rejection:
-            # LiteLLM's Cerbos guard rejected the call before any provider was contacted,
-            # so nothing can have been charged: release the full reservation.
-            release(reservation_id, amount, owner_id, dept_id, team_id, rejection, body.model)
-            step(
-                trace,
-                "Cerbos inside LiteLLM: may this key invoke this model?",
-                "deny",
-                rule=rejection["rule"],
-                reason=rejection["reason"],
-                detail=f"principal {guard_principal['id']} · resource model:{body.model}"
-                f" · max_tokens {body.max_tokens}",
-            )
-            step(
-                trace, "Release reservation", "ok", detail="No provider call, so nothing was spent."
-            )
-            raise HTTPException(
-                rejection["status"],
-                f"Cerbos inside LiteLLM denied this call: {rejection['reason']}",
-            ) from None
-        # An HTTP timeout/error does NOT prove that a provider did not charge.
-        # Keep the full reservation and never automatically retry or release it.
-        with SessionLocal.begin() as db:
-            lock_mutation(db)
-            reservation = db.get(Reservation, reservation_id)
-            reservation.status = "uncertain"
-            bus.emit(
-                db,
-                "gateway.reconciliation_required",
-                owner_id,
-                reservation_id,
-                dept_id,
-                team_id,
-                reserved_micros=amount,
-            )
-        step(trace, "Provider", "error", reason="Outcome uncertain; funds stay reserved.")
-        raise HTTPException(
-            502,
-            "The provider outcome is uncertain. Funds remain reserved and this request will not be retried automatically.",
-        ) from None
+        raise _litellm_failure(error, trace, request_detail) from None
+
+    with SessionLocal.begin() as db:
+        reservation = db.scalar(
+            select(Reservation)
+            .where(Reservation.key_id == key_id, Reservation.idempotency_key == idempotency_key)
+            .with_for_update()
+        )
+        if not reservation or reservation.status != "settled":
+            # LiteLLM answered without a settled charge: never hand out an unbilled answer.
+            logger.error("Answered call without a settled ledger entry: key=%s", key_id)
+            raise HTTPException(502, "The ledger did not record this call; it was not returned")
+        reservation.response = result  # For idempotent replay of this exact answer.
+        reserved, charged = reservation.amount_micros, reservation.actual_micros
+        budget_ids = list(reservation.budget_ids)
 
     if trace is not None:
         decision = cerbos_headers(response_headers)
         if not decision["effect"]:  # Older LiteLLM image without the headers hook.
             decision = explain(
-                guard_principal, [model_resource(body.model, body.max_tokens)], ["invoke"]
+                guard_principal,
+                [model_resource(body.model, body.max_tokens)],
+                ["invoke"],
+                source="playground",
             )[body.model]["invoke"]
             decision["obligations"] = {}
         applied = ", ".join(f"{k} → {v}" for k, v in decision["obligations"].items())
         step(
             trace,
-            "Cerbos inside LiteLLM: may this key invoke this model?",
+            cerbos_step,
             "allow",
             rule=decision["rule"],
             reason=decision["reason"],
             obligations=decision["obligations"],
-            detail=f"principal {guard_principal['id']} · resource model:{body.model}"
-            f" · max_tokens {body.max_tokens} · {body.data_classification} data"
-            + (f" · obligations applied: {applied}" if applied else ""),
+            detail=request_detail + (f" · obligations applied: {applied}" if applied else ""),
         )
+        step(
+            trace,
+            BUDGET_STEP,
+            "ok",
+            detail=f"Reserved the maximum possible cost (${reserved / 1_000_000:.6f}) on "
+            + ", ".join(budget_ids),
+        )
+        usage = result.get("usage") or {}
         step(
             trace,
             "Provider",
             "ok",
             model=model_used,
-            detail=f"Answered by {model_used}: {input_used} input and {output_used} output tokens",
+            detail=f"Answered by {model_used}: {usage.get('prompt_tokens')} input and "
+            f"{usage.get('completion_tokens')} output tokens",
         )
-
-    with SessionLocal.begin() as db:
-        lock_mutation(db)
-        reservation = db.get(Reservation, reservation_id)
-        budgets = db.scalars(
-            select(Budget)
-            .where(Budget.id.in_(reservation.budget_ids))
-            .order_by(Budget.id)
-            .with_for_update()
-        ).all()
-        for budget in budgets:
-            budget.reserved_micros -= amount
-            budget.spent_micros += actual
-        reservation.status, reservation.actual_micros, reservation.response = (
-            "settled",
-            actual,
-            result,
+        step(
+            trace,
+            "Settle actual cost",
+            "ok",
+            detail=f"Charged ${charged / 1_000_000:.6f} inside LiteLLM; the rest of the "
+            "reservation was released.",
         )
-        bus.emit(
-            db,
-            "gateway.completed",
-            owner_id,
-            reservation_id,
-            dept_id,
-            team_id,
-            cost_micros=actual,
-            model=body.model,
-        )
-    step(
-        trace,
-        "Settle actual cost",
-        "ok",
-        detail=f"Charged ${actual / 1_000_000:.6f}; the rest of the reservation was released.",
-    )
     return result
-
-
-def release(reservation_id, amount, owner_id, dept_id, team_id, rejection, model):
-    with SessionLocal.begin() as db:
-        lock_mutation(db)
-        reservation = db.get(Reservation, reservation_id)
-        budgets = db.scalars(
-            select(Budget)
-            .where(Budget.id.in_(reservation.budget_ids))
-            .order_by(Budget.id)
-            .with_for_update()
-        ).all()
-        for budget in budgets:
-            budget.reserved_micros -= amount
-        reservation.status, reservation.actual_micros = "denied", 0
-        bus.emit(
-            db,
-            "gateway.policy_denied",
-            owner_id,
-            reservation_id,
-            dept_id,
-            team_id,
-            model=model,
-            rule=rejection["rule"],
-            reason=rejection["reason"],
-        )

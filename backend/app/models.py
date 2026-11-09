@@ -134,7 +134,7 @@ class Reservation(Base):
     __tablename__ = "reservations"
     __table_args__ = (
         UniqueConstraint("key_id", "idempotency_key"),
-        # Backs the per-key sliding-minute rate limit query in the gateway.
+        # Backs the per-key sliding-minute rate limit query in the ledger.
         Index("ix_reservations_key_created", "key_id", "created_at"),
     )
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
@@ -147,6 +147,10 @@ class Reservation(Base):
     tokens: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="reserved")
     response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # "gateway" when the call came through the governed gateway, "direct" when a key holder
+    # called LiteLLM themselves. Budgets apply to both (app/ledger.py).
+    entry: Mapped[str] = mapped_column(String(16), default="gateway", server_default="gateway")
+    model: Mapped[str] = mapped_column(String(100), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

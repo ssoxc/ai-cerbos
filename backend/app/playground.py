@@ -21,12 +21,13 @@ from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import demo, policy_store, story
+from . import demo, policy_store, seed, story
 from .auth import current_user
 from .config import settings
-from .db import get_db
+from .db import SessionLocal, get_db
 from .events import bus
 from .gateway import (
+    BUDGET_STEP,
     MODEL_TIERS,
     MODELS,
     answered_model,
@@ -36,9 +37,11 @@ from .gateway import (
     forward_completion,
     guard_rejection,
     key_principal,
+    lock_mutation,
     model_resource,
+    stream_completion,
 )
-from .models import ApiKey, Approval, Asset, Budget, Department, Team, User
+from .models import ApiKey, Approval, Asset, Budget, Department, Reservation, Team, User
 from .policy import (
     approval_resource,
     asset_resource,
@@ -335,7 +338,7 @@ def run_check(db: Session, request: CheckRequest) -> dict:
         apply_overrides(available[rid][0], request.resource_overrides)
         for rid in request.resource_ids
     ]
-    decisions = explain(principal, items, actions)
+    decisions = explain(principal, items, actions, source="playground")
     return {
         "principal": principal,
         "kind": request.kind,
@@ -447,6 +450,7 @@ class TraceRequest(StrictModel):
     max_tokens: int = Field(default=DEFAULT_TRACE_TOKENS, ge=1, le=2048)
     path: Literal["gateway", "direct"] = "gateway"
     data_classification: Literal["public", "internal", "confidential"] = "internal"
+    stream: bool = False
 
 
 def _outcome(status: int) -> str:
@@ -475,7 +479,12 @@ def trace_request(body: TraceRequest, user: User = Depends(demo_user)):
         messages=[{"role": "user", "content": "Summarize how this request is governed."}],
         max_tokens=body.max_tokens,
         data_classification=body.data_classification,
+        stream=body.stream,
     )
+    if body.stream:
+        if body.path == "direct":
+            raise HTTPException(422, "The playground streams through the gateway only")
+        return _trace_stream(token, completion)
     if body.path == "direct":
         steps, result = direct_to_litellm(token, completion, key_principal(key))
         return _summary(result, completion, steps)
@@ -500,14 +509,77 @@ def trace_request(body: TraceRequest, user: User = Depends(demo_user)):
     return _summary(result, completion, steps)
 
 
+def _read_stream(chunks) -> tuple[str, int]:
+    """The text of a server-sent event stream and how many chunks carried it."""
+    text, count = [], 0
+    for line in b"".join(chunks).decode().splitlines():
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        count += 1
+        for choice in json.loads(line[6:]).get("choices") or []:
+            text.append((choice.get("delta") or {}).get("content") or "")
+    return "".join(text), count
+
+
+def _trace_stream(token: str, completion: Completion) -> dict:
+    """A streamed call through the gateway, read to the end, with what the ledger charged."""
+    steps: list[dict] = []
+    try:
+        headers, chunks, _ = stream_completion(
+            token, completion, f"playground-{uuid.uuid4()}", steps
+        )
+    except HTTPException as error:
+        result = {
+            "outcome": _outcome(error.status_code),
+            "http_status": error.status_code,
+            "message": error.detail,
+            "steps": steps,
+        }
+        return _summary(result, completion, steps)
+    text, count = _read_stream(chunks)
+    model_used = headers.get("x-litellm-model-group") or completion.model
+    steps.append(
+        {
+            "name": "Provider",
+            "status": "ok",
+            "model": model_used,
+            "detail": f"Streamed by {model_used} in {count} chunks",
+        }
+    )
+    with SessionLocal() as db:
+        entry = db.get(Reservation, headers.get("x-ai-spine-reservation") or "")
+        settled = entry is not None and entry.status == "settled"
+        charged = entry.actual_micros if settled else None
+    steps.append(
+        {
+            "name": "Settle actual cost",
+            "status": "ok" if settled else "error",
+            "detail": f"Charged ${charged / 1_000_000:.6f} inside LiteLLM when the stream ended, "
+            "from its final usage chunk."
+            if settled
+            else "The ledger has no settled charge for this stream.",
+        }
+    )
+    result = {
+        "outcome": "allow" if settled else "error",
+        "http_status": 200,
+        "message": "Streamed through the governed gateway and billed when the stream ended.",
+        "steps": steps,
+        "reply": text,
+        "streamed": True,
+    }
+    return _summary(result, completion, steps)
+
+
 def direct_to_litellm(token: str, completion: Completion, guard_principal: dict):
     """Call LiteLLM directly with the key, skipping the gateway, to show Cerbos still applies."""
     steps = [
         {
             "name": "Gateway bypassed",
             "status": "skipped",
-            "detail": "No gateway authorization and no budget reservation: the key is sent "
-            "straight to LiteLLM, as a client inside the network could.",
+            "detail": "No gateway checks: the key is sent straight to LiteLLM, as anyone holding "
+            "it could if LiteLLM is reachable. Cerbos and the budget ledger still apply, "
+            "because both run inside LiteLLM.",
         }
     ]
     name = "Cerbos inside LiteLLM: may this key invoke this model?"
@@ -520,6 +592,15 @@ def direct_to_litellm(token: str, completion: Completion, guard_principal: dict)
         model_used = answered_model(result, headers, completion.model)
     except httpx.HTTPStatusError as error:
         rejection = guard_rejection(error)
+        if rejection and rejection["kind"] == "budget":
+            steps.append({"name": name, "status": "allow", "detail": detail})
+            steps.append({"name": BUDGET_STEP, "status": "deny", "reason": rejection["reason"]})
+            return steps, {
+                "outcome": "deny",
+                "http_status": rejection["status"],
+                "message": f"The budget ledger inside LiteLLM refused this call: {rejection['reason']}",
+                "steps": steps,
+            }
         if rejection:
             steps.append(
                 {
@@ -562,6 +643,20 @@ def direct_to_litellm(token: str, completion: Completion, guard_principal: dict)
             "detail": detail,
         }
     )
+    reserved, charged = (
+        _micros(headers.get("x-ai-spine-reserved-micros")),
+        _micros(headers.get("x-ai-spine-charged-micros")),
+    )
+    steps.append(
+        {
+            "name": BUDGET_STEP,
+            "status": "ok" if reserved is not None else "error",
+            "detail": f"Reserved ${reserved / 1_000_000:.6f} on the key, agent, team, department "
+            "and organization budgets, without the gateway."
+            if reserved is not None
+            else "No reservation was reported.",
+        }
+    )
     steps.append(
         {
             "name": "Provider",
@@ -570,14 +665,31 @@ def direct_to_litellm(token: str, completion: Completion, guard_principal: dict)
             "detail": f"Answered by {model_used}.",
         }
     )
+    steps.append(
+        {
+            "name": "Settle actual cost",
+            "status": "ok" if charged is not None else "error",
+            "detail": f"Charged ${charged / 1_000_000:.6f} inside LiteLLM, against every cap."
+            if charged is not None
+            else "No settled charge was reported.",
+        }
+    )
     return steps, {
         "outcome": "allow",
         "http_status": 200,
-        "message": "LiteLLM answered directly. Cerbos still decided, but no gateway budget applied.",
+        "message": "LiteLLM answered directly. Cerbos decided and the ledger charged every "
+        "budget, with no gateway involved.",
         "steps": steps,
         "reply": result["choices"][0]["message"]["content"],
-        "headers": {k: v for k, v in headers.items() if k.startswith("x-cerbos")},
+        "headers": {k: v for k, v in headers.items() if k.startswith(("x-cerbos", "x-ai-spine"))},
     }
+
+
+def _micros(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # --- LiteLLM: model catalog and MCP tools ---------------------------------------------------
@@ -604,6 +716,7 @@ def model_catalog(body: OwnerRequest, user: User = Depends(demo_user)):
         key_principal(key),
         [model_resource(m, 1, "public") for m in MODELS],
         ["list"],
+        source="playground",
     )
     return {
         "owner": body.owner,
@@ -656,9 +769,9 @@ def call_mcp_tool(body: ToolRequest, user: User = Depends(demo_user)):
         ) from None
     except (httpx.HTTPError, ValueError, KeyError):
         raise HTTPException(502, "LiteLLM's MCP gateway is unreachable") from None
-    decision = explain(key_principal(key), [mcp_tool_resource(tool)], ["call"])[
-        f"knowledge/{tool['name']}"
-    ]["call"]
+    decision = explain(
+        key_principal(key), [mcp_tool_resource(tool)], ["call"], source="playground"
+    )[f"knowledge/{tool['name']}"]["call"]
     text = " ".join(c.get("text", "") for c in payload.get("content") or [] if isinstance(c, dict))
     return {
         "owner": body.owner,
@@ -749,6 +862,28 @@ SITUATIONS = [
             "path": "direct",
         },
     },
+    {
+        "id": "bypass-billed",
+        "group": "Model calls",
+        "title": "Standard model, internal data, bypassing the gateway",
+        "request": {
+            "model": "governed-demo",
+            "max_tokens": 256,
+            "data_classification": "internal",
+            "path": "direct",
+        },
+    },
+    {
+        "id": "streamed",
+        "group": "Model calls",
+        "title": "Streamed answer, standard model",
+        "request": {
+            "model": "governed-demo",
+            "max_tokens": 256,
+            "data_classification": "internal",
+            "stream": True,
+        },
+    },
     {"id": "catalog", "group": "Model catalog", "title": "List models (GET /v1/models)"},
     {
         "id": "mcp-read",
@@ -771,7 +906,9 @@ def _model_cell(result: dict, requested_tokens: int) -> dict:
     if result["outcome"] == "deny":
         denied = next((s for s in result["steps"] if s["status"] == "deny"), {})
         outcome, rule, reason = (
-            "refused",
+            "over_budget"
+            if denied.get("name") == BUDGET_STEP and "budget" in denied.get("reason", "")
+            else "refused",
             denied.get("rule"),
             denied.get("reason", result["message"]),
         )
@@ -791,6 +928,7 @@ def _model_cell(result: dict, requested_tokens: int) -> dict:
         "reason": reason,
         "answered_model": result.get("answered_model"),
         "obligations": obligations,
+        "streamed": bool(result.get("streamed")),
         "steps": result.get("steps", []),
     }
 
@@ -842,6 +980,61 @@ def traffic(user: User = Depends(demo_user)):
         "calls": len(cells),
         "seconds": round(time.monotonic() - started, 2),
     }
+
+
+# --- Budgets inside LiteLLM: a team that has spent its cap --------------------------------
+# A data change, not a policy change: People Operations' team cap is set to what it has
+# already spent. Riley's model calls are then refused by the ledger inside LiteLLM, both
+# through the gateway and when the key is sent straight to LiteLLM.
+
+SPENT_TEAM, SPENT_TEAM_DEPARTMENT = "people-ops", "people"
+
+
+class SwitchRequest(StrictModel):
+    on: bool
+
+
+def _team_budget_state(db) -> dict:
+    budget = db.get(Budget, f"team:{SPENT_TEAM}")
+    return {
+        "team": "People Operations",
+        "on": budget.limit_micros < seed.team_limit_micros(SPENT_TEAM_DEPARTMENT),
+        "limit_micros": budget.limit_micros,
+        "spent_micros": budget.spent_micros + budget.reserved_micros,
+    }
+
+
+@router.get("/playground/team-budget")
+def team_budget_state(user: User = Depends(demo_user), db: Session = Depends(get_db)):
+    return _team_budget_state(db)
+
+
+@router.put("/playground/team-budget")
+def set_team_budget(body: SwitchRequest, user: User = Depends(demo_user)):
+    with SessionLocal.begin() as db:
+        lock_mutation(db)
+        budget = db.scalar(
+            select(Budget).where(Budget.id == f"team:{SPENT_TEAM}").with_for_update()
+        )
+        before = budget.limit_micros
+        budget.limit_micros = (
+            budget.spent_micros + budget.reserved_micros
+            if body.on
+            else seed.team_limit_micros(SPENT_TEAM_DEPARTMENT)
+        )
+        bus.emit(
+            db,
+            "budget.updated",
+            user.id,
+            budget.id,
+            SPENT_TEAM_DEPARTMENT,
+            SPENT_TEAM,
+            previous_micros=before,
+            limit_micros=budget.limit_micros,
+            source="playground",
+        )
+    with SessionLocal() as db:
+        return _team_budget_state(db)
 
 
 # --- Story: capability board and one-click policy changes ------------------------------

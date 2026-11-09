@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     policies_dir: str = str(Path(__file__).resolve().parents[2] / "cerbos" / "policies")
     # The policies this build shipped with: the baseline for diffs and reset.
     shipped_policies_dir: str = str(Path(__file__).resolve().parents[2] / "cerbos" / "policies")
+    # Cerbos's own decision log (JSON lines), shared read-only with the API.
+    cerbos_decision_log: str = "/audit/decisions.log"
+    # Shared with LiteLLM's Cerbos guard, which reserves and settles budget through the
+    # internal ledger API (app/ledger.py). Empty means the ledger refuses every call.
+    ledger_token: str = ""
 
 
 @lru_cache

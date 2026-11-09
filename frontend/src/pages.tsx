@@ -465,7 +465,7 @@ export function Registry({ data, open, select }: PageProps) {
   );
 }
 
-export function Approvals({ data, open }: PageProps) {
+export function Approvals({ data, open, switchPersona }: PageProps) {
   const [tab, setTab] = useState("pending");
   const filtered = data.approvals.filter(
     (a) => tab === "all" || (tab === "pending" ? a.status === "pending" : a.status !== "pending"),
@@ -515,6 +515,28 @@ export function Approvals({ data, open }: PageProps) {
                   <span>{relativeTime(a.created_at)}</span>
                 </div>
                 {a.review_note && <div className="review-note">Review: {a.review_note}</div>}
+                {a.status === "pending" && a.approvers && (
+                  <div className="approvers-line">
+                    <span>Cerbos lets these personas approve it:</span>
+                    {a.approvers.length === 0 && <span>nobody in the demo</span>}
+                    {a.approvers.map((person) =>
+                      person.id === data.user.id ? (
+                        <span key={person.id} className="approver-you">
+                          {person.name} (you)
+                        </span>
+                      ) : (
+                        <Button
+                          key={person.id}
+                          size="small"
+                          appearance="outline"
+                          onClick={() => switchPersona(person.id)}
+                        >
+                          Switch to {person.name}
+                        </Button>
+                      ),
+                    )}
+                  </div>
+                )}
               </div>
               <div className="approval-action">
                 <strong>{a.payload.budget ? money(Number(a.payload.budget) * 1_000_000) : "—"}</strong>

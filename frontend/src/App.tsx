@@ -6,6 +6,7 @@ import {
   Beaker24Regular,
   ChevronRight16Regular,
   ClipboardTask24Regular,
+  DataBarVertical24Regular,
   Dismiss20Regular,
   History24Regular,
   Home24Regular,
@@ -19,8 +20,9 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, loadWorkspace, roleName } from "./api";
+import { api, loadWorkspace, personaLabel, roleName } from "./api";
 import { ActionDialog, AssetDrawer, SecretDialog } from "./dialogs";
+import { MetricsPage } from "./metrics/MetricsPage";
 import { Approvals, Audit, Budgets, Keys, Organization, Overview, Policies, Registry } from "./pages";
 import { AdvancedPage } from "./playground/AdvancedPage";
 import { StoryPage } from "./playground/story/StoryPage";
@@ -32,6 +34,8 @@ export type PageProps = {
   select: (asset: Asset) => void;
   notify: (message: string) => void;
   reveal: (secret: string) => void;
+  /** Demo mode: sign in as another persona. */
+  switchPersona: (userId: string) => void;
 };
 
 type NavItem = {
@@ -78,6 +82,13 @@ const navigation: NavItem[] = [
     permission: "view_policies",
   },
   {
+    path: "/metrics",
+    label: "Metrics",
+    icon: DataBarVertical24Regular,
+    group: "Governance",
+    permission: "view_metrics",
+  },
+  {
     path: "/audit",
     label: "Audit log",
     icon: History24Regular,
@@ -110,7 +121,8 @@ export default function App() {
     refetchInterval: 30000,
   });
   const identity = useMutation({
-    mutationFn: async (userId: string) => {
+    /** `stay` keeps the current page (every persona may open it), otherwise go home. */
+    mutationFn: async ({ userId, stay = false }: { userId: string; stay?: boolean }) => {
       setDialog(null);
       setSelectedId(null);
       setSecret("");
@@ -123,7 +135,7 @@ export default function App() {
       await queryClient.cancelQueries({ queryKey: ["workspace"] });
       queryClient.removeQueries({ queryKey: ["policy"] });
       queryClient.setQueryData(["workspace"], next);
-      navigate("/");
+      if (!stay) navigate("/");
     },
   });
 
@@ -166,6 +178,8 @@ export default function App() {
     select: (asset) => setSelectedId(asset.id),
     notify: setNotification,
     reveal: setSecret,
+    // Used from the Approvals page, which every persona can open: stay there to decide.
+    switchPersona: (userId) => identity.mutate({ userId, stay: true }),
   };
   const selected = data.assets.find((asset) => asset.id === selectedId) || null;
   const current =
@@ -289,12 +303,11 @@ export default function App() {
                   className="persona-select"
                   aria-label="Switch demo persona"
                   value={data.user.id}
-                  onChange={(event) => identity.mutate(event.target.value)}
+                  onChange={(event) => identity.mutate({ userId: event.target.value })}
                 >
                   {(users.data || [data.user]).map((user) => (
                     <option key={user.id} value={user.id}>
-                      {user.name} · {roleName(user.roles[0])}
-                      {user.roles.includes("api_key_approver") ? " / key approver" : ""}
+                      {personaLabel(user)}
                     </option>
                   ))}
                 </Select>
@@ -357,6 +370,12 @@ export default function App() {
             <Route
               path="/policies"
               element={data.permissions.view_policies ? <Policies {...props} /> : <Navigate to="/" replace />}
+            />
+            <Route
+              path="/metrics"
+              element={
+                data.permissions.view_metrics ? <MetricsPage {...props} /> : <Navigate to="/" replace />
+              }
             />
             <Route
               path="/audit"

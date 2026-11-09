@@ -149,3 +149,6 @@ resources:
     kind: mcp_tool
     id: knowledge/delete_collection
     attr: {<<: *tool, tool: delete_collection, risk: destructive}
+  workspace:
+    kind: platform
+    id: workspace

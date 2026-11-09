@@ -68,6 +68,8 @@ try:
         "premium-long": {"alex": "downgraded", "sam": "capped", "riley": "downgraded"},
         "confidential": {"alex": "refused", "sam": "answered", "riley": "refused"},
         "bypass": {"alex": "refused", "sam": "refused", "riley": "refused"},
+        "bypass-billed": {"alex": "answered", "sam": "answered", "riley": "answered"},
+        "streamed": {"alex": "answered", "sam": "answered", "riley": "answered"},
         "catalog": {"alex": "hidden", "sam": "listed", "riley": "hidden"},
         "mcp-read": {"alex": "called", "sam": "called", "riley": "called"},
         "mcp-write": {"alex": "refused", "sam": "called", "riley": "refused"},
@@ -80,19 +82,52 @@ try:
             for situation, owners in expected.items()
         }
 
+    # Start from the shipped budgets, whatever was switched in the playground before.
+    call("PUT", "/api/playground/team-budget", {"on": False})
     board = call("POST", "/api/playground/traffic")
     assert outcomes(board) == expected, outcomes(board)
     downgraded = board["cells"]["premium:alex"]
     assert downgraded["answered_model"] == "governed-demo", downgraded
     assert downgraded["obligations"] == {"model": "governed-demo"}, downgraded
     assert board["cells"]["premium-long:sam"]["obligations"] == {"max_tokens": 512}
+    # A streamed answer is billed by the ledger inside LiteLLM when the stream ends.
+    streamed = board["cells"]["streamed:sam"]
+    assert streamed["streamed"], streamed
+    settle = next(s for s in streamed["steps"] if s["name"] == "Settle actual cost")
+    assert settle["status"] == "ok", streamed["steps"]
     # A one-click policy change is live within seconds and flips exactly the expected cell.
     call("PUT", "/api/playground/presets/hr-confidential", {"on": True})
     changed = outcomes(call("POST", "/api/playground/traffic"))
     assert changed["confidential"]["riley"] == "answered", changed
     call("PUT", "/api/playground/presets/hr-confidential", {"on": False})
     assert outcomes(call("POST", "/api/playground/traffic")) == expected
-    print("PASS: registration → scoped approval → two real LiteLLM keys with the same display name → one-time reveal → completion → idempotent replay → hard budget rejection → revocation → Cerbos inside LiteLLM: 27-call traffic board (obligations, data classification with gateway bypass, filtered model catalog, MCP tool authorization) and a live policy change.")
+    # Budgets are enforced inside LiteLLM: once People Operations has spent its team cap,
+    # Riley's model calls are refused, through the gateway and straight to LiteLLM alike.
+    call("PUT", "/api/playground/team-budget", {"on": True})
+    try:
+        spent = outcomes(call("POST", "/api/playground/traffic"))
+        for situation in ("standard", "premium", "premium-long", "bypass-billed", "streamed"):
+            assert spent[situation]["riley"] == "over_budget", spent
+            assert spent[situation]["alex"] == expected[situation]["alex"], spent
+        assert spent["confidential"]["riley"] == "refused", spent  # Cerbos decides first.
+    finally:
+        call("PUT", "/api/playground/team-budget", {"on": False})
+    # The ledger API is internal: the public web server does not expose it.
+    exposed = client.post("/internal/ledger/reserve", json={})
+    assert "reservation_id" not in exposed.text and exposed.status_code != 200, exposed.status_code
+    # Metrics read Cerbos's own decision log: LiteLLM's checks arrive tagged by source.
+    login("morgan")
+    metrics = call("GET", "/api/metrics?window=1h")
+    cerbos = metrics["cerbos"]
+    assert cerbos["available"], cerbos
+    litellm = next(s for s in cerbos["sources"] if s["source"] == "litellm")
+    assert litellm["decisions"] > 0, cerbos["sources"]
+    assert cerbos["litellm"]["outcomes"]["downgraded"] > 0, cerbos["litellm"]
+    ledger = metrics["ledger"]["summary"]
+    assert ledger["saved_micros"] > 0, ledger
+    # Calls sent straight to LiteLLM are billed by the ledger inside LiteLLM.
+    assert ledger["direct_requests"] > 0, ledger
+    print("PASS: registration → scoped approval → two real LiteLLM keys with the same display name → one-time reveal → completion → idempotent replay → hard budget rejection → revocation → Cerbos inside LiteLLM: 33-call traffic board, with a streamed answer (obligations, data classification with gateway bypass, filtered model catalog, MCP tool authorization), a live policy change, budgets enforced inside LiteLLM even when the gateway is skipped, and metrics read from Cerbos's own decision log.")
 finally:
     login("alex")
     for issued_key_id in key_ids:

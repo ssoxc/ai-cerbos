@@ -8,7 +8,8 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 COPY --from=cerbos /cerbos /usr/local/bin/cerbos
 # /policies is where the live-policy volume mounts; owned by the API so it can write.
-RUN useradd --system --no-create-home --uid 10001 app && mkdir /policies && chown app:app /policies
+RUN useradd --system --no-create-home --uid 10001 app \
+    && mkdir /policies /audit && chown app:app /policies /audit
 COPY --chown=app:app backend/alembic.ini ./
 COPY --chown=app:app backend/migrations ./migrations
 COPY --chown=app:app backend/app ./app
@@ -26,5 +27,7 @@ RUN pip install --no-cache-dir --require-hashes -r requirements-dev.txt
 COPY --chown=app:app backend/tests ./tests
 COPY --chown=app:app backend/pyproject.toml ./
 COPY --chown=app:app scripts/test.py scripts/smoke.py ./scripts/
+# LiteLLM's Cerbos guard, unit-tested with a stub for LiteLLM's base class.
+COPY --chown=app:app infra/cerbos_guard.py ./infra/cerbos_guard.py
 USER app
 CMD ["python", "scripts/test.py"]

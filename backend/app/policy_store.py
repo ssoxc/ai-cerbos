@@ -33,6 +33,7 @@ from sqlalchemy import text
 
 from .config import settings
 from .db import SessionLocal
+from .policy import SOURCE_HEADER
 
 log = logging.getLogger("ai_cerbos.policies")
 PROBE_FILE = "ai_cerbos_probe.yaml"
@@ -258,6 +259,7 @@ def _probe_policy(revision: str) -> str:
 def _served_revision(client: httpx.Client) -> str | None:
     response = client.post(
         f"{settings().cerbos_url}/api/check/resources",
+        headers={SOURCE_HEADER: "probe"},
         json={
             "requestId": str(uuid.uuid4()),
             "principal": {"id": "probe", "roles": ["probe"]},

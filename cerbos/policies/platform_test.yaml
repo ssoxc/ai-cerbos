@@ -1,0 +1,31 @@
+---
+name: PlatformTestSuite
+description: Metrics are for administrative roles; builders and viewers do not see them.
+tests:
+  - name: Only administrative roles see governance metrics
+    input:
+      principals: [maya, alex, sam, morgan, jordan, avery, quinn]
+      resources: [workspace]
+      actions: [view_metrics]
+    expected:
+      - principal: maya
+        resource: workspace
+        actions: {view_metrics: EFFECT_DENY}
+      - principal: alex
+        resource: workspace
+        actions: {view_metrics: EFFECT_DENY}
+      - principal: sam
+        resource: workspace
+        actions: {view_metrics: EFFECT_DENY}
+      - principal: morgan
+        resource: workspace
+        actions: {view_metrics: EFFECT_ALLOW}
+      - principal: jordan
+        resource: workspace
+        actions: {view_metrics: EFFECT_ALLOW}
+      - principal: avery
+        resource: workspace
+        actions: {view_metrics: EFFECT_ALLOW}
+      - principal: quinn
+        resource: workspace
+        actions: {view_metrics: EFFECT_ALLOW}

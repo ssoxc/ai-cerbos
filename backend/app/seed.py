@@ -9,6 +9,11 @@ from .db import SessionLocal
 from .models import Approval, Asset, Budget, Department, Event, Team, User, now
 
 
+def team_limit_micros(department_id: str) -> int:
+    """The seeded cap of every team in a department (also restored by the playground)."""
+    return {"technology": 5000, "people": 6000}.get(department_id, 4000) * 1_000_000
+
+
 def seed():
     if not settings().demo_mode:
         return
@@ -321,9 +326,7 @@ def seed():
                     scope="team",
                     department_id=dept,
                     team_id=id,
-                    limit_micros=5000 * 1_000_000
-                    if dept == "technology"
-                    else (6000 if dept == "people" else 4000) * 1_000_000,
+                    limit_micros=team_limit_micros(dept),
                     spent_micros=team_spend[id],
                 )
             )

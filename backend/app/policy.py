@@ -12,6 +12,14 @@ from .models import User
 ASSET_ACTIONS = ["view", "edit", "delete", "request_budget", "request_key", "use"]
 NO_MATCH_REASON = "No rule matched, so Cerbos denies by default."
 BATCH = 50
+# Cerbos records this header in its decision log (includeMetadataKeys in cerbos/config.yaml),
+# so the metrics page can tell enforcement from lookups and simulations:
+#   api        an action was attempted and allowed or refused (require)
+#   gateway    the gateway checked an AI request
+#   litellm    LiteLLM's Cerbos guard checked a model, catalog or MCP tool call
+#   dashboard  the dashboard asked what a person may do, to show or hide controls
+#   playground a what-if simulation; probe: the policy reload check
+SOURCE_HEADER = "X-Ai-Spine-Source"
 
 
 def principal(user: User):
@@ -36,10 +44,10 @@ def resource(resource_kind, id, **attrs):
     return {"kind": resource_kind, "id": id, "attr": attrs}
 
 
-def _post_checks(principal_dict, resources, actions, include_meta=False):
+def _post_checks(principal_dict, resources, actions, include_meta=False, source="dashboard"):
     """Yield Cerbos results for every resource, in batches. Fails closed with a 503."""
     try:
-        with httpx.Client(timeout=8) as client:
+        with httpx.Client(timeout=8, headers={SOURCE_HEADER: source}) as client:
             for start in range(0, len(resources), BATCH):
                 body = {
                     "requestId": str(uuid.uuid4()),
@@ -60,23 +68,24 @@ def _post_checks(principal_dict, resources, actions, include_meta=False):
         ) from None
 
 
-def check_many(user: User, resources: list[dict], actions: list[str]):
+def check_many(user: User, resources: list[dict], actions: list[str], source="dashboard"):
     if not resources:
         return {}
     return {
         item["resource"]["id"]: {
             action: item["actions"].get(action) == "EFFECT_ALLOW" for action in actions
         }
-        for item in _post_checks(principal(user), resources, actions)
+        for item in _post_checks(principal(user), resources, actions, source=source)
     }
 
 
-def permissions(user, item, actions):
-    return check_many(user, [item], actions).get(item["id"], {})
+def permissions(user, item, actions, source="dashboard"):
+    return check_many(user, [item], actions, source=source).get(item["id"], {})
 
 
 def require(user, item, action):
-    if not permissions(user, item, [action]).get(action):
+    """Enforce one attempted action. Cerbos logs it as source "api"."""
+    if not permissions(user, item, [action], source="api").get(action):
         raise HTTPException(403, "Cerbos denied this action for your role and scope")
 
 
@@ -119,35 +128,46 @@ def rule_effects() -> dict[str, str]:
     return effects
 
 
-def explain(principal_dict: dict, resources: list[dict], actions: list[str]):
+def decided_by(kind, action, effect, activated, effects=None):
+    """The named rule behind one action's decision: (rule, reason, obligations).
+
+    `activated` is Cerbos's list of rule outputs for the resource (from a check response or
+    its decision log). Several rules can activate; the one whose own effect matches the
+    final effect explains the decision.
+    """
+    effects = rule_effects() if effects is None else effects
+    wanted = "EFFECT_ALLOW" if effect == "EFFECT_ALLOW" else "EFFECT_DENY"
+    for entry in activated or []:
+        if entry.get("action") != action:
+            continue
+        rule = entry.get("src", "").rsplit("#", 1)[-1]
+        value = entry.get("val", "")
+        obligations = {}
+        # Some outputs are maps carrying their own effect (see model.yaml).
+        if isinstance(value, dict):
+            rule_effect = f"EFFECT_{str(value.get('effect', '')).upper()}"
+            obligations = value.get("obligations") or {}
+            value = value.get("reason", "")
+        else:
+            rule_effect = effects.get(f"{kind}#{rule}")
+        if rule_effect == wanted:
+            return rule, str(value), obligations if isinstance(obligations, dict) else {}
+    return None, NO_MATCH_REASON, {}
+
+
+def explain(principal_dict: dict, resources: list[dict], actions: list[str], source="dashboard"):
     """Decide like check_many, and also say which named rule decided and why."""
     if not resources:
         return {}
     effects = rule_effects()
     output = {}
-    for item in _post_checks(principal_dict, resources, actions, include_meta=True):
+    for item in _post_checks(principal_dict, resources, actions, include_meta=True, source=source):
         kind, rid = item["resource"]["kind"], item["resource"]["id"]
         meta = (item.get("meta") or {}).get("actions", {})
-        activated = item.get("outputs") or []
         decisions = {}
         for action in actions:
             effect = item["actions"].get(action, "EFFECT_DENY")
-            wanted = "EFFECT_ALLOW" if effect == "EFFECT_ALLOW" else "EFFECT_DENY"
-            candidates = []
-            for entry in activated:
-                if entry.get("action") != action:
-                    continue
-                rule = entry.get("src", "").rsplit("#", 1)[-1]
-                value = entry.get("val", "")
-                # Some outputs are maps carrying their own effect (see model.yaml).
-                if isinstance(value, dict):
-                    rule_effect = f"EFFECT_{str(value.get('effect', '')).upper()}"
-                    value = value.get("reason", "")
-                else:
-                    rule_effect = effects.get(f"{kind}#{rule}")
-                if rule_effect == wanted:
-                    candidates.append((rule, str(value)))
-            rule, reason = candidates[0] if candidates else (None, NO_MATCH_REASON)
+            rule, reason, _ = decided_by(kind, action, effect, item.get("outputs"), effects)
             decisions[action] = {
                 "effect": "allow" if effect == "EFFECT_ALLOW" else "deny",
                 "policy": (meta.get(action) or {}).get("matchedPolicy") or "",

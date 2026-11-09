@@ -7,6 +7,10 @@ export type User = {
   team_ids: string[];
   admin_team_ids: string[];
   department_ids: string[];
+  /** Demo persona list only: display names of the ids above. */
+  team_names?: string[];
+  admin_team_names?: string[];
+  department_names?: string[];
 };
 export type Budget = {
   id: string;
@@ -56,6 +60,8 @@ export type Approval = {
   payload: Record<string, string | number>;
   permissions: Permissions;
   created_at: string;
+  /** Demo mode: the personas Cerbos would let approve this pending request. */
+  approvers?: { id: string; name: string }[];
 };
 export type ApiKey = {
   id: string;

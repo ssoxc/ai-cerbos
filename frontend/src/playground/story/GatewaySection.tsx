@@ -7,6 +7,7 @@ import {
   makeStyles,
   mergeClasses,
   Spinner,
+  Switch,
   tokens,
 } from "@fluentui/react-components";
 import {
@@ -19,12 +20,19 @@ import {
   Play20Regular,
   ShieldKeyhole24Regular,
   SubtractCircle20Regular,
+  Wallet20Regular,
   Warning20Filled,
   Wrench20Regular,
 } from "@fluentui/react-icons";
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { sendGatewayRequest, useTraffic } from "../hooks";
+import {
+  sendGatewayRequest,
+  setTeamBudget,
+  useRefreshAuthorization,
+  useTeamBudget,
+  useTraffic,
+} from "../hooks";
 import type {
   Catalog,
   GatewayRequest,
@@ -219,7 +227,10 @@ const STEP_LABELS: Record<string, { title: string; sub?: string; cerbos?: boolea
     sub: "asset:use",
     cerbos: true,
   },
-  "Reserve budget at every level": { title: "Budget reserved" },
+  "Budget inside LiteLLM: reserve at every level": {
+    title: "Budget check",
+    sub: "inside LiteLLM, every level",
+  },
   "Cerbos inside LiteLLM: may this key invoke this model?": {
     title: "Cerbos inside LiteLLM",
     sub: "model:invoke",
@@ -390,8 +401,15 @@ function RequestPanel({ catalog, ready }: { catalog: Catalog; ready: boolean }) 
           <Pipeline steps={result.steps} />
           {(result.litellm_reason || deny?.reason) && (
             <p style={{ margin: 0 }}>
-              <strong>Cerbos:</strong> {deny?.reason ?? result.litellm_reason}{" "}
-              <span className={story.mono}>({deny?.rule ?? result.litellm_rule ?? "default deny"})</span>
+              <strong>{deny?.name.startsWith("Budget") ? "Budget ledger:" : "Cerbos:"}</strong>{" "}
+              {deny?.reason ?? result.litellm_reason}{" "}
+              <span className={story.mono}>
+                (
+                {deny?.rule ??
+                  result.litellm_rule ??
+                  (deny?.name.startsWith("Budget") ? "budget ledger inside LiteLLM" : "default deny")}
+                )
+              </span>
             </p>
           )}
           {result.outcome === "allow" && result.litellm_rule && (
@@ -432,6 +450,11 @@ const HOOKS = [
     title: "On every response",
     text: "x-cerbos-* headers name the rule that applied.",
   },
+  {
+    icon: Wallet20Regular,
+    title: "Budgets, on every model call",
+    text: "Reserve the maximum cost at every level before the provider, settle the real cost after.",
+  },
 ];
 
 const OUTCOMES: Record<
@@ -442,6 +465,7 @@ const OUTCOMES: Record<
   downgraded: { label: "Downgraded", color: "warning" },
   capped: { label: "Capped", color: "warning" },
   refused: { label: "Refused", color: "danger" },
+  over_budget: { label: "Over budget", color: "severe" },
   listed: { label: "Premium listed", color: "success" },
   hidden: { label: "Premium hidden", color: "informative" },
   called: { label: "Called", color: "success" },
@@ -452,6 +476,9 @@ function cellNote(cell: TrafficCell): string {
   if (cell.outcome === "downgraded") return `answered by ${cell.answered_model ?? "the standard model"}`;
   if (cell.outcome === "capped") return `at ${cell.obligations?.max_tokens} tokens`;
   if (cell.outcome === "listed" || cell.outcome === "hidden") return (cell.visible ?? []).join(", ");
+  if (cell.outcome === "answered" && cell.streamed) return "streamed, billed when it ended";
+  if (cell.outcome === "over_budget")
+    return `${cell.reason.split(" ")[0].toLowerCase()} cap reached, inside LiteLLM`;
   return cell.rule ?? (cell.outcome === "refused" ? "default deny" : "");
 }
 
@@ -506,7 +533,10 @@ function CellDetail({ situation, owner, cell }: { situation: string; owner: stri
         </strong>
       </div>
       <p style={{ margin: 0 }}>
-        {cell.reason} <span className={story.mono}>({cell.rule ?? "default deny"})</span>
+        {cell.reason}{" "}
+        <span className={story.mono}>
+          ({cell.rule ?? (cell.outcome === "over_budget" ? "budget ledger inside LiteLLM" : "default deny")})
+        </span>
       </p>
       {(cell.outcome === "downgraded" || cell.outcome === "capped") && <ObligationFlow cell={cell} />}
       {cell.steps && cell.steps.length > 0 && <Pipeline steps={cell.steps} />}
@@ -570,7 +600,7 @@ function TrafficBoard({ catalog }: { catalog: Catalog }) {
             <h3 className={story.cardTitle}>AI traffic, decided by Cerbos inside LiteLLM</h3>
             <p className={story.muted}>
               {data
-                ? `${data.calls} real calls through LiteLLM in ${data.seconds} s: ${(data.counts.answered ?? 0) + (data.counts.called ?? 0)} went through unchanged, ${obligations} were changed by Cerbos obligations, ${data.counts.refused ?? 0} were refused.`
+                ? `${data.calls} real calls through LiteLLM in ${data.seconds} s: ${(data.counts.answered ?? 0) + (data.counts.called ?? 0)} went through unchanged, ${obligations} were changed by Cerbos obligations, ${data.counts.refused ?? 0} were refused${data.counts.over_budget ? `, ${data.counts.over_budget} were over budget` : ""}.`
                 : "Every situation below is sent for every key, through the governed gateway and LiteLLM."}
             </p>
           </div>
@@ -587,7 +617,7 @@ function TrafficBoard({ catalog }: { catalog: Catalog }) {
           <MessageBar intent="warning">
             <MessageBarBody>
               {changed.size} {changed.size === 1 ? "outcome" : "outcomes"} changed since the last run, because
-              a policy changed. They are highlighted below.
+              a policy or budget changed. They are highlighted below.
             </MessageBarBody>
           </MessageBar>
         )}
@@ -661,6 +691,42 @@ function TrafficBoard({ catalog }: { catalog: Catalog }) {
   );
 }
 
+/** Budgets live inside LiteLLM, so skipping the gateway cannot skip a cap. */
+function BudgetCard() {
+  const story = useStoryStyles();
+  const state = useTeamBudget();
+  const refresh = useRefreshAuthorization();
+  const change = useMutation({
+    mutationFn: setTeamBudget,
+    onSuccess: () => refresh(),
+  });
+  const on = change.isPending ? change.variables : Boolean(state.data?.on);
+  return (
+    <div className={story.card}>
+      <h3 className={story.cardTitle}>Budgets are enforced inside LiteLLM, not only at the gateway</h3>
+      <p className={story.muted}>
+        The API key a team receives is a LiteLLM key. If budgets were checked only in the gateway, anyone
+        holding a key who can reach LiteLLM could call it directly and spend past every cap. The same gap
+        exists in any design where the gateway alone counts money. Here LiteLLM's Cerbos hook reserves each
+        call's maximum cost on the key, agent, team, department and organization budgets before the provider
+        is called, and settles the real cost afterwards. The row <em>bypassing the gateway</em> below is
+        billed the same way.
+      </p>
+      <Switch
+        checked={on}
+        disabled={change.isPending || !state.data}
+        onChange={(_, details) => change.mutate(details.checked)}
+        label={
+          on
+            ? "People Operations has spent its team budget: Riley's model calls are refused, even straight to LiteLLM"
+            : "Let People Operations run out of team budget"
+        }
+      />
+      {change.error && <p role="alert">{change.error.message}</p>}
+    </div>
+  );
+}
+
 export function GatewaySection({ catalog }: { catalog: Catalog }) {
   const styles = useStyles();
   const story = useStoryStyles();
@@ -670,7 +736,7 @@ export function GatewaySection({ catalog }: { catalog: Catalog }) {
         number={3}
         id="gateway-title"
         title="Cerbos inside LiteLLM"
-        description="LiteLLM, the AI gateway, asks Cerbos at four points. Inside LiteLLM the principal is the API key, with the team, unit and agent recorded when it was issued. Three keys from three teams send the same traffic; every cell below is a real call. Change a policy in section 2 and the board runs again."
+        description="LiteLLM, the AI gateway, asks Cerbos at four points and checks budgets on every model call. Inside LiteLLM the principal is the API key, with the team, unit and agent recorded when it was issued. Three keys from three teams send the same traffic; every cell below is a real call. Change a policy in section 2 and the board runs again."
       />
       <div className={styles.hooks}>
         {HOOKS.map((hook) => (
@@ -683,6 +749,7 @@ export function GatewaySection({ catalog }: { catalog: Catalog }) {
           </div>
         ))}
       </div>
+      <BudgetCard />
       <TrafficBoard catalog={catalog} />
       <details className={styles.custom}>
         <summary className={styles.customSummary}>Build your own request</summary>

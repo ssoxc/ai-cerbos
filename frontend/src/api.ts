@@ -1,4 +1,4 @@
-import type { Workspace } from "./types";
+import type { User, Workspace } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -75,6 +75,14 @@ export const roleName = (role: string) =>
     api_key_approver: "API key approver",
     finance_admin: "Finance admin",
   })[role] || role;
+/** "Developer + API key approver · Agents & Automation · Technology", for the persona picker. */
+export function personaLabel(user: User) {
+  const roles = user.roles.map(roleName).join(" + ");
+  const admin = user.admin_team_names?.length ? `admin of ${user.admin_team_names.join(", ")}` : "";
+  const teams = admin || user.team_names?.join(", ") || "";
+  const departments = user.department_names?.length ? user.department_names.join(", ") : "all departments";
+  return [user.name, roles, teams, departments].filter(Boolean).join(" · ");
+}
 export const kindName = (kind: string) =>
   ({ agent: "AI agent", mcp: "MCP server", skill: "Agent skill" })[kind] || kind;
 export function relativeTime(date: string) {

@@ -11,6 +11,7 @@ import type {
   PolicySummary,
   Preset,
   PresetResult,
+  TeamBudget,
   ToolResult,
   Traffic,
 } from "./types";
@@ -80,6 +81,7 @@ export const actionLabel = (action: string) =>
     view_organization: "Organization area",
     view_audit: "Audit log",
     view_policies: "Policies page",
+    view_metrics: "Metrics page",
     create_department: "Create unit",
     assign_cost_admin: "Assign cost admin",
     register_asset: "Register asset",
@@ -114,6 +116,15 @@ export function usePresets() {
     queryFn: () => api<Preset[]>("/api/playground/presets"),
   });
 }
+
+export function useTeamBudget() {
+  return useQuery({
+    queryKey: [PLAYGROUND, "team-budget"],
+    queryFn: () => api<TeamBudget>("/api/playground/team-budget"),
+  });
+}
+
+export const setTeamBudget = (on: boolean) => api<TeamBudget>("/api/playground/team-budget", "PUT", { on });
 
 export const togglePreset = (id: string, on: boolean) =>
   api<PresetResult>(`/api/playground/presets/${id}`, "PUT", { on });

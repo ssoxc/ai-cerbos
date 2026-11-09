@@ -10,6 +10,7 @@
 !cerbos/policies
 !scripts/test.py
 !scripts/smoke.py
+!infra/cerbos_guard.py
 **/__pycache__
 **/.pytest_cache
 **/.ruff_cache

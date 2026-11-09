@@ -6,11 +6,11 @@ from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import playground
+from . import ledger, metrics, playground
 from .auth import current_user, session_token
 from .config import settings
 from .db import get_db
@@ -21,6 +21,7 @@ from .gateway import (
     generate_upstream_key,
     lock_mutation,
     revoke_upstream,
+    stream_completion,
 )
 from .models import ApiKey, Approval, Asset, Budget, Department, Event, Team, User, now, uid
 from .policy import (
@@ -59,6 +60,7 @@ PLATFORM_ACTIONS = [
     "view_organization",
     "view_audit",
     "view_policies",
+    "view_metrics",
     "create_department",
     "assign_cost_admin",
     "register_asset",
@@ -176,7 +178,19 @@ def health():
 def demo_users(db: Session = Depends(get_db)):
     if not settings().demo_mode:
         raise HTTPException(404, "Demo sign-in is disabled")
-    return [dump(user) for user in db.scalars(select(User).where(User.active.is_(True))).all()]
+    teams = {row.id: row.name for row in db.scalars(select(Team)).all()}
+    departments = {row.id: row.name for row in db.scalars(select(Department)).all()}
+    return [
+        {
+            **dump(user),
+            # Names for the persona picker: where each person sits, so it is clear who
+            # can see or approve what.
+            "team_names": [teams.get(t, t) for t in user.team_ids],
+            "admin_team_names": [teams.get(t, t) for t in user.admin_team_ids],
+            "department_names": [departments.get(d, d) for d in user.department_ids],
+        }
+        for user in db.scalars(select(User).where(User.active.is_(True))).all()
+    ]
 
 
 @app.post("/api/session")
@@ -276,6 +290,21 @@ def state(user: User = Depends(current_user), db: Session = Depends(get_db)):
             db, user, Approval, approval_resource, ["view", "approve", "decline"]
         )
     ]
+    if settings().demo_mode:
+        # Demo only: who could decide each pending request, asked of Cerbos for every
+        # persona, so a tester knows whom to switch to.
+        pending = [a for a in approvals if a["status"] == "pending"]
+        by_id = {a["id"]: a for a in pending}
+        rows = [row for row in db.scalars(select(Approval)) if row.id in by_id]
+        for approval in pending:
+            approval["approvers"] = []
+        for person in all_users:
+            if not person.active or not rows:
+                continue
+            decisions = check_many(person, [approval_resource(r) for r in rows], ["approve"])
+            for approval_id, allowed in decisions.items():
+                if allowed.get("approve"):
+                    by_id[approval_id]["approvers"].append({"id": person.id, "name": person.name})
     key_rows = visible(db, user, ApiKey, key_resource, ["view", "claim", "revoke"])
     key_budgets = {
         row.id: row
@@ -846,6 +875,16 @@ def chat_completions(
         raise HTTPException(401, "Bearer API key required")
     if not idempotency_key or len(idempotency_key) > 100:
         raise HTTPException(422, "Provide an Idempotency-Key header (1–100 characters)")
+    if body.stream:
+        headers, chunks, _ = stream_completion(authorization[7:], body, idempotency_key)
+        passthrough = {
+            k: v for k, v in headers.items() if k.startswith(("x-cerbos-", "x-ai-spine-")) and v
+        }
+        return StreamingResponse(
+            chunks,
+            media_type="text/event-stream",
+            headers={**passthrough, "Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     return complete(authorization[7:], body, idempotency_key)
 
 
@@ -865,3 +904,5 @@ def test_key(key_id: str, user: User = Depends(current_user), db: Session = Depe
 
 # The Cerbos playground (demo mode only): explore, compare, edit policies, trace, reset.
 app.include_router(playground.router)
+app.include_router(metrics.router)
+app.include_router(ledger.router)
