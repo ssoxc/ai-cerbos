@@ -1,0 +1,73 @@
+apiVersion: api.cerbos.dev/v1
+# Spending caps at organization, department, team, agent and key level.
+resourcePolicy:
+  version: default
+  resource: budget
+  rules:
+    - name: executives-and-finance-view-all
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin, finance_admin]
+      output:
+        when:
+          ruleActivated: '"Executive and finance admins see every budget."'
+
+    # Separation of duties, whatever other roles the executive holds (see asset.yaml).
+    - name: executives-never-edit-caps
+      actions: [edit]
+      effect: EFFECT_DENY
+      roles: ["*"]
+      condition:
+        match:
+          expr: "'executive_admin' in P.roles"
+      output:
+        when:
+          ruleActivated: '"Executive admins can see budgets but never change a cap, whatever other roles they hold."'
+
+    - name: team-admins-view-team-budgets
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.team_id in request.principal.attr.admin_team_ids
+      output:
+        when:
+          ruleActivated: '"Developer admins see budgets for the teams they administer."'
+
+    - name: cost-admins-view-department-budgets
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Cost-center admins see budgets in the departments they administer."'
+
+    - name: cost-admins-set-department-and-team-caps
+      actions: [edit]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.scope in ['department', 'team'] && request.resource.attr.department_id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Cost-center admins set department and team caps in their own departments only."'
+
+    - name: finance-sets-organization-cap
+      actions: [edit]
+      effect: EFFECT_ALLOW
+      roles: [finance_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.scope == 'organization'
+      output:
+        when:
+          ruleActivated: '"Only finance admins change the organization-wide cap."'

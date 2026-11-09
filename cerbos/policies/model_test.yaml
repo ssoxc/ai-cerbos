@@ -1,0 +1,117 @@
+---
+name: ModelTestSuite
+description: Model catalog and invocation inside LiteLLM, including obligations Cerbos returns.
+tests:
+  - name: The catalog shows premium only to approved teams
+    input:
+      principals: [key_platform, key_agents]
+      resources: [model_standard, model_premium_256]
+      actions: [list]
+    expected:
+      - principal: key_platform
+        resource: model_standard
+        actions: {list: EFFECT_ALLOW}
+      - principal: key_platform
+        resource: model_premium_256
+        actions: {list: EFFECT_DENY}
+      - principal: key_agents
+        resource: model_standard
+        actions: {list: EFFECT_ALLOW}
+      - principal: key_agents
+        resource: model_premium_256
+        actions: {list: EFFECT_ALLOW}
+
+  - name: Other teams asking for premium are downgraded, not refused
+    input:
+      principals: [key_platform]
+      resources: [model_premium_256]
+      actions: [invoke]
+    expected:
+      - principal: key_platform
+        resource: model_premium_256
+        actions: {invoke: EFFECT_ALLOW}
+        outputs:
+          - action: invoke
+            expected:
+              - src: resource.model.vdefault#premium-downgraded-for-other-teams
+                val:
+                  effect: allow
+                  reason: Premium is reserved for the Agents & Automation team, so Cerbos downgraded this request to the standard model.
+                  obligations: {model: governed-demo}
+
+  - name: Approved teams get premium, capped at the token limit
+    input:
+      principals: [key_agents]
+      resources: [model_premium_256, model_premium_1024]
+      actions: [invoke]
+    expected:
+      - principal: key_agents
+        resource: model_premium_256
+        actions: {invoke: EFFECT_ALLOW}
+        outputs:
+          - action: invoke
+            expected:
+              - src: resource.model.vdefault#premium-for-approved-teams
+                val:
+                  effect: allow
+                  reason: Premium is allowed for this team.
+                  obligations: {max_tokens: 256}
+      - principal: key_agents
+        resource: model_premium_1024
+        actions: {invoke: EFFECT_ALLOW}
+        outputs:
+          - action: invoke
+            expected:
+              - src: resource.model.vdefault#premium-for-approved-teams
+                val:
+                  effect: allow
+                  reason: Premium is allowed for this team. Cerbos capped the request at 512 output tokens.
+                  obligations: {max_tokens: 512}
+
+  - name: Confidential data only reaches premium, and only for approved teams
+    input:
+      principals: [key_platform, key_agents]
+      resources: [model_standard_confidential, model_premium_confidential]
+      actions: [invoke]
+    expected:
+      - principal: key_platform
+        resource: model_standard_confidential
+        actions: {invoke: EFFECT_DENY}
+      - principal: key_platform
+        resource: model_premium_confidential
+        actions: {invoke: EFFECT_DENY}
+      - principal: key_agents
+        resource: model_standard_confidential
+        actions: {invoke: EFFECT_DENY}
+      - principal: key_agents
+        resource: model_premium_confidential
+        actions: {invoke: EFFECT_ALLOW}
+
+  - name: People who are not API keys cannot list or invoke models
+    input:
+      principals: [alex, avery]
+      resources: [model_standard]
+      actions: [list, invoke]
+    expected:
+      - principal: alex
+        resource: model_standard
+        actions: {list: EFFECT_DENY, invoke: EFFECT_DENY}
+      - principal: avery
+        resource: model_standard
+        actions: {list: EFFECT_DENY, invoke: EFFECT_DENY}
+
+  - name: People Operations keys are downgraded for premium and refused for confidential data
+    input:
+      principals: [key_people]
+      resources: [model_premium_256, model_premium_confidential, model_standard_confidential]
+      actions: [invoke]
+    expected:
+      - principal: key_people
+        resource: model_premium_256
+        actions: {invoke: EFFECT_ALLOW}
+      - principal: key_people
+        resource: model_premium_confidential
+        actions: {invoke: EFFECT_DENY}
+      - principal: key_people
+        resource: model_standard_confidential
+        actions: {invoke: EFFECT_DENY}

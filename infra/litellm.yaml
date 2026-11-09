@@ -1,0 +1,49 @@
+model_list:
+  - model_name: governed-demo
+    litellm_params:
+      model: openai/governed-demo
+      api_base: http://mock-provider:8081/v1
+      api_key: os.environ/MOCK_PROVIDER_KEY
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00003
+    model_info:
+      mode: chat
+      max_input_tokens: 16000
+      max_output_tokens: 2048
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00003
+  # Premium tier: five times the price. Who may call it is decided by Cerbos
+  # (cerbos/policies/model.yaml), enforced by the cerbos_guard hook below.
+  - model_name: governed-premium
+    litellm_params:
+      model: openai/governed-premium
+      api_base: http://mock-provider:8081/v1
+      api_key: os.environ/MOCK_PROVIDER_KEY
+      input_cost_per_token: 0.00005
+      output_cost_per_token: 0.00015
+    model_info:
+      mode: chat
+      max_input_tokens: 16000
+      max_output_tokens: 2048
+      input_cost_per_token: 0.00005
+      output_cost_per_token: 0.00015
+# MCP servers proxied by LiteLLM's MCP gateway. infra/cerbos_guard.py asks Cerbos
+# before every tool call (cerbos/policies/mcp_tool.yaml).
+mcp_servers:
+  knowledge:
+    url: http://knowledge-mcp:8082/mcp
+    transport: http
+    description: Knowledge base from the asset registry (demo MCP server).
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  disable_spend_logs: false
+litellm_settings:
+  drop_params: false
+  num_retries: 0
+  request_timeout: 45
+  # Cerbos inside LiteLLM: model calls, MCP tool calls, model catalog and response
+  # headers all go through infra/cerbos_guard.py.
+  callbacks: cerbos_guard.proxy_handler_instance
+router_settings:
+  num_retries: 0
+  timeout: 45

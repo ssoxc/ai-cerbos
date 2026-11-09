@@ -1,0 +1,151 @@
+# Representative resources shaped like asset_resource, approval_resource,
+# key_resource and budget_policy in the backend. Seeded ids are reused where
+# they exist; the rest are fixtures for specific rules.
+resources:
+  # --- assets ---
+  atlas:
+    kind: asset
+    id: atlas
+    attr: &asset
+      owner_id: alex
+      team_id: platform
+      department_id: technology
+      visibility: global
+      status: active
+      kind: agent
+      cost_editor_ids: [alex]
+  code_review:
+    kind: asset
+    id: code-review
+    attr: {<<: *asset, owner_id: morgan, visibility: team}
+  incident:
+    kind: asset
+    id: incident
+    attr: {<<: *asset, owner_id: morgan, team_id: agents, visibility: team, cost_editor_ids: []}
+  release_notes:
+    kind: asset
+    id: release-notes
+    attr: {<<: *asset, owner_id: maya, visibility: team, status: pending}
+  people_assistant:
+    kind: asset
+    id: people-assistant
+    attr: {<<: *asset, owner_id: riley, team_id: people-ops, department_id: people, cost_editor_ids: []}
+  global_pending:
+    kind: asset
+    id: global-pending
+    attr: {<<: *asset, owner_id: sam, team_id: agents, status: pending, cost_editor_ids: []}
+  maya_personal:
+    kind: asset
+    id: maya-personal
+    attr: {<<: *asset, owner_id: maya, team_id: "", visibility: private, kind: skill, cost_editor_ids: []}
+  maya_personal_archived:
+    kind: asset
+    id: maya-personal-archived
+    attr: {<<: *asset, owner_id: maya, team_id: "", visibility: private, status: archived, kind: skill, cost_editor_ids: []}
+  new_platform_asset:
+    kind: asset
+    id: new-platform-asset
+    attr: {<<: *asset, owner_id: "", status: pending, cost_editor_ids: []}
+
+  # --- approvals ---
+  request_release:
+    kind: approval
+    id: request-release
+    attr: &approval
+      requester_id: maya
+      department_id: technology
+      team_id: platform
+      kind: asset
+      status: pending
+  request_atlas_budget:
+    kind: approval
+    id: request-atlas-budget
+    attr: {<<: *approval, requester_id: morgan, kind: budget}
+  request_atlas_key:
+    kind: approval
+    id: request-atlas-key
+    attr: {<<: *approval, requester_id: alex, kind: key}
+  request_sam_key:
+    kind: approval
+    id: request-sam-key
+    attr: {<<: *approval, requester_id: sam, team_id: agents, kind: key}
+  request_atlas_budget_approved:
+    kind: approval
+    id: request-atlas-budget-approved
+    attr: {<<: *approval, requester_id: morgan, kind: budget, status: approved}
+  request_atlas_key_declined:
+    kind: approval
+    id: request-atlas-key-declined
+    attr: {<<: *approval, requester_id: alex, kind: key, status: declined}
+  request_people_budget:
+    kind: approval
+    id: request-people-budget
+    attr: {<<: *approval, requester_id: riley, department_id: people, team_id: people-ops, kind: budget, status: approved}
+
+  # --- API keys ---
+  key_atlas:
+    kind: api_key
+    id: key-atlas
+    attr: {owner_id: alex, department_id: technology, team_id: platform}
+  key_people:
+    kind: api_key
+    id: key-people
+    attr: {owner_id: riley, department_id: people, team_id: people-ops}
+
+  # --- budgets ---
+  budget_organization:
+    kind: budget
+    id: organization
+    attr: {scope: organization, department_id: null, team_id: null}
+  budget_technology:
+    kind: budget
+    id: department:technology
+    attr: {scope: department, department_id: technology, team_id: null}
+  budget_people:
+    kind: budget
+    id: department:people
+    attr: {scope: department, department_id: people, team_id: null}
+  budget_platform:
+    kind: budget
+    id: team:platform
+    attr: {scope: team, department_id: technology, team_id: platform}
+  budget_atlas:
+    kind: budget
+    id: asset:atlas
+    attr: {scope: asset, department_id: technology, team_id: platform}
+
+  # --- models (checked inside LiteLLM) ---
+  model_standard:
+    kind: model
+    id: governed-demo
+    attr: {tier: standard, max_tokens: 2048, data_classification: internal}
+  model_premium_256:
+    kind: model
+    id: governed-premium
+    attr: {tier: premium, max_tokens: 256, data_classification: internal}
+  model_premium_1024:
+    kind: model
+    id: governed-premium
+    attr: {tier: premium, max_tokens: 1024, data_classification: internal}
+  model_standard_confidential:
+    kind: model
+    id: governed-demo
+    attr: {tier: standard, max_tokens: 256, data_classification: confidential}
+  model_premium_confidential:
+    kind: model
+    id: governed-premium
+    attr: {tier: premium, max_tokens: 256, data_classification: confidential}
+
+  # --- MCP tools (checked inside LiteLLM's MCP gateway) ---
+  tool_search:
+    kind: mcp_tool
+    id: knowledge/search_docs
+    attr: &tool {server: knowledge, tool: search_docs, risk: read, owner_team: agents}
+  tool_add_note:
+    kind: mcp_tool
+    id: knowledge/add_note
+    attr: {<<: *tool, tool: add_note, risk: write}
+  tool_delete:
+    kind: mcp_tool
+    id: knowledge/delete_collection
+    attr: {<<: *tool, tool: delete_collection, risk: destructive}

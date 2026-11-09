@@ -1,0 +1,126 @@
+apiVersion: api.cerbos.dev/v1
+# Model access, enforced INSIDE LiteLLM by infra/cerbos_guard.py.
+#
+#   list    which models an API key sees in GET /v1/models
+#   invoke  every model call; Cerbos may allow, deny, or allow with obligations
+#           (downgrade the model, cap max_tokens) that LiteLLM then applies.
+#
+# The principal is the API key itself (role api_key) with the owner, team, department
+# and agent recorded when it was issued. The resource carries the requested model's
+# tier, max_tokens and the request's data classification.
+#
+# Outputs are maps carrying the rule's effect, a reason and any obligations, because
+# LiteLLM's guard cannot read these files to tell which activated rule decided.
+#
+# Try it: add 'platform' to premium_teams and Alex's premium requests are no longer
+# downgraded, and the premium model appears in Alex's model catalog.
+resourcePolicy:
+  version: default
+  resource: model
+  variables:
+    local:
+      premium_teams: "['agents']"
+      premium_max_tokens: "512"
+      # Teams whose keys may send confidential data, to the zero-retention premium model.
+      confidential_teams: "['agents']"
+  rules:
+    # --- Catalog: GET /v1/models -------------------------------------------------------
+    - name: standard-listed-for-every-key
+      actions: [list]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.tier == 'standard'
+      output:
+        when:
+          ruleActivated: '{"effect": "allow", "reason": "Every approved key sees the standard model."}'
+
+    - name: premium-listed-for-approved-teams
+      actions: [list]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.tier == 'premium' && P.attr.team_id in V.premium_teams
+      output:
+        when:
+          ruleActivated: '{"effect": "allow", "reason": "The premium model appears only for teams approved for it."}'
+
+    # --- Invocation ----------------------------------------------------------------------
+    - name: confidential-never-to-standard
+      actions: [invoke]
+      effect: EFFECT_DENY
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.data_classification == 'confidential' && R.attr.tier == 'standard'
+      output:
+        when:
+          ruleActivated: '{"effect": "deny", "reason": "Confidential data may only go to the zero-retention premium model."}'
+
+    - name: confidential-needs-approved-team
+      actions: [invoke]
+      effect: EFFECT_DENY
+      roles: [api_key]
+      condition:
+        match:
+          expr: >-
+            R.attr.data_classification == 'confidential' && R.attr.tier == 'premium' && !(P.attr.team_id in V.confidential_teams)
+      output:
+        when:
+          ruleActivated: '{"effect": "deny", "reason": "This team is not approved to send confidential data to any model, and Cerbos never downgrades confidential requests."}'
+
+    - name: premium-for-confidential-data
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: >-
+            R.attr.data_classification == 'confidential' && R.attr.tier == 'premium' && P.attr.team_id in V.confidential_teams
+      output:
+        when:
+          ruleActivated: >-
+            {"effect": "allow",
+             "reason": "This team is approved to send confidential data to the zero-retention premium model.",
+             "obligations": {"max_tokens": int(R.attr.max_tokens) > V.premium_max_tokens ? V.premium_max_tokens : int(R.attr.max_tokens)}}
+
+    - name: standard-for-every-key
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.tier == 'standard'
+      output:
+        when:
+          ruleActivated: '{"effect": "allow", "reason": "Standard models are open to every approved key."}'
+
+    - name: premium-for-approved-teams
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.tier == 'premium' && P.attr.team_id in V.premium_teams
+      output:
+        when:
+          ruleActivated: >-
+            {"effect": "allow",
+             "reason": int(R.attr.max_tokens) > V.premium_max_tokens
+               ? "Premium is allowed for this team. Cerbos capped the request at " + string(V.premium_max_tokens) + " output tokens."
+               : "Premium is allowed for this team.",
+             "obligations": {"max_tokens": int(R.attr.max_tokens) > V.premium_max_tokens ? V.premium_max_tokens : int(R.attr.max_tokens)}}
+
+    - name: premium-downgraded-for-other-teams
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: >-
+            R.attr.tier == 'premium' && !(P.attr.team_id in V.premium_teams) && R.attr.data_classification != 'confidential'
+      output:
+        when:
+          ruleActivated: '{"effect": "allow", "reason": "Premium is reserved for the Agents & Automation team, so Cerbos downgraded this request to the standard model.", "obligations": {"model": "governed-demo"}}'

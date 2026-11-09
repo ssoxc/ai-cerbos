@@ -1,0 +1,217 @@
+---
+name: AssetTestSuite
+description: Asset visibility, ownership and role limits from the README permission table.
+tests:
+  - name: Viewers see only active global assets or their own
+    input:
+      principals: [maya]
+      resources:
+        - atlas
+        - people_assistant
+        - code_review
+        - incident
+        - global_pending
+        - release_notes
+        - maya_personal
+      actions: [view]
+    expected:
+      - principal: maya
+        resource: atlas
+        actions: {view: EFFECT_ALLOW}
+      - principal: maya
+        resource: people_assistant
+        actions: {view: EFFECT_ALLOW}
+      # Team membership grants nothing to the viewer role.
+      - principal: maya
+        resource: code_review
+        actions: {view: EFFECT_DENY}
+      - principal: maya
+        resource: incident
+        actions: {view: EFFECT_DENY}
+      # Global but not yet active.
+      - principal: maya
+        resource: global_pending
+        actions: {view: EFFECT_DENY}
+      - principal: maya
+        resource: release_notes
+        actions: {view: EFFECT_ALLOW}
+      - principal: maya
+        resource: maya_personal
+        actions: {view: EFFECT_ALLOW}
+
+  - name: Developers also see their own team's assets
+    input:
+      principals: [alex]
+      resources: [code_review, incident, global_pending]
+      actions: [view]
+    expected:
+      - principal: alex
+        resource: code_review
+        actions: {view: EFFECT_ALLOW}
+      - principal: alex
+        resource: incident
+        actions: {view: EFFECT_DENY}
+      - principal: alex
+        resource: global_pending
+        actions: {view: EFFECT_DENY}
+
+  - name: Ownership never permits deleting a team asset
+    input:
+      principals: [maya, alex]
+      resources: [release_notes, atlas]
+      actions: [delete]
+    expected:
+      - principal: maya
+        resource: release_notes
+        actions: {delete: EFFECT_DENY}
+      - principal: maya
+        resource: atlas
+        actions: {delete: EFFECT_DENY}
+      - principal: alex
+        resource: release_notes
+        actions: {delete: EFFECT_DENY}
+      - principal: alex
+        resource: atlas
+        actions: {delete: EFFECT_DENY}
+
+  - name: Owners delete their own personal assets unless archived
+    input:
+      principals: [maya]
+      resources: [maya_personal, maya_personal_archived]
+      actions: [delete, edit]
+    expected:
+      - principal: maya
+        resource: maya_personal
+        actions: {delete: EFFECT_ALLOW, edit: EFFECT_ALLOW}
+      - principal: maya
+        resource: maya_personal_archived
+        actions: {delete: EFFECT_DENY, edit: EFFECT_DENY}
+
+  - name: Developer admins delete only in their admin teams
+    input:
+      principals: [morgan]
+      resources: [atlas, incident, people_assistant]
+      actions: [delete]
+    expected:
+      - principal: morgan
+        resource: atlas
+        actions: {delete: EFFECT_ALLOW}
+      - principal: morgan
+        resource: incident
+        actions: {delete: EFFECT_ALLOW}
+      - principal: morgan
+        resource: people_assistant
+        actions: {delete: EFFECT_DENY}
+
+  - name: Edits are limited to own or member-team assets
+    input:
+      principals: [alex, riley]
+      resources: [atlas, code_review]
+      actions: [edit]
+    expected:
+      - principal: alex
+        resource: atlas
+        actions: {edit: EFFECT_ALLOW}
+      - principal: alex
+        resource: code_review
+        actions: {edit: EFFECT_ALLOW}
+      - principal: riley
+        resource: atlas
+        actions: {edit: EFFECT_DENY}
+      - principal: riley
+        resource: code_review
+        actions: {edit: EFFECT_DENY}
+
+  - name: Registration is limited to own department and team
+    input:
+      principals: [maya, alex, riley]
+      resources: [new_platform_asset]
+      actions: [create]
+    expected:
+      - principal: maya
+        resource: new_platform_asset
+        actions: {create: EFFECT_ALLOW}
+      - principal: alex
+        resource: new_platform_asset
+        actions: {create: EFFECT_ALLOW}
+      - principal: riley
+        resource: new_platform_asset
+        actions: {create: EFFECT_DENY}
+
+  - name: Budget proposals need delegation; key requests need team access
+    input:
+      principals: [maya, alex, riley]
+      resources: [atlas]
+      actions: [request_budget, request_key, use]
+    expected:
+      - principal: maya
+        resource: atlas
+        actions: {request_budget: EFFECT_DENY, request_key: EFFECT_DENY, use: EFFECT_DENY}
+      - principal: alex
+        resource: atlas
+        actions: {request_budget: EFFECT_ALLOW, request_key: EFFECT_ALLOW, use: EFFECT_ALLOW}
+      - principal: riley
+        resource: atlas
+        actions: {request_budget: EFFECT_DENY, request_key: EFFECT_DENY, use: EFFECT_DENY}
+
+  - name: Executive, cost center and finance admins are denied asset mutations
+    input:
+      principals: [avery, jordan, quinn]
+      resources: [atlas, maya_personal]
+      actions: [create, edit, delete, request_budget, request_key, use]
+    expected:
+      - principal: avery
+        resource: atlas
+        actions: &no_mutation
+          create: EFFECT_DENY
+          edit: EFFECT_DENY
+          delete: EFFECT_DENY
+          request_budget: EFFECT_DENY
+          request_key: EFFECT_DENY
+          use: EFFECT_DENY
+      - principal: avery
+        resource: maya_personal
+        actions: *no_mutation
+      - principal: jordan
+        resource: atlas
+        actions: *no_mutation
+      - principal: jordan
+        resource: maya_personal
+        actions: *no_mutation
+      - principal: quinn
+        resource: atlas
+        actions: *no_mutation
+      - principal: quinn
+        resource: maya_personal
+        actions: *no_mutation
+
+  - name: Executive admins view everything; cost center admins their departments
+    input:
+      principals: [avery, jordan, casey, quinn]
+      resources: [maya_personal, people_assistant]
+      actions: [view]
+    expected:
+      - principal: avery
+        resource: maya_personal
+        actions: {view: EFFECT_ALLOW}
+      - principal: avery
+        resource: people_assistant
+        actions: {view: EFFECT_ALLOW}
+      - principal: jordan
+        resource: maya_personal
+        actions: {view: EFFECT_ALLOW}
+      - principal: jordan
+        resource: people_assistant
+        actions: {view: EFFECT_DENY}
+      - principal: casey
+        resource: maya_personal
+        actions: {view: EFFECT_DENY}
+      - principal: casey
+        resource: people_assistant
+        actions: {view: EFFECT_ALLOW}
+      - principal: quinn
+        resource: maya_personal
+        actions: {view: EFFECT_DENY}
+      - principal: quinn
+        resource: people_assistant
+        actions: {view: EFFECT_DENY}

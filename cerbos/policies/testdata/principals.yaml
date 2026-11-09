@@ -1,0 +1,71 @@
+# Mirrors the seeded personas in backend/app/seed.py and the attributes
+# backend/app/policy.py sends as the Cerbos principal.
+principals:
+  maya:
+    id: maya
+    roles: [viewer]
+    attr: {team_ids: [platform], admin_team_ids: [], department_ids: [technology]}
+  alex:
+    id: alex
+    roles: [developer]
+    attr: {team_ids: [platform], admin_team_ids: [], department_ids: [technology]}
+  morgan:
+    id: morgan
+    roles: [developer_admin]
+    attr: {team_ids: [platform, agents], admin_team_ids: [platform, agents], department_ids: [technology]}
+  jordan:
+    id: jordan
+    roles: [cost_center_admin]
+    attr: {team_ids: [], admin_team_ids: [], department_ids: [technology]}
+  sam:
+    id: sam
+    roles: [developer, api_key_approver]
+    attr: {team_ids: [agents], admin_team_ids: [], department_ids: [technology]}
+  avery:
+    id: avery
+    roles: [executive_admin]
+    attr: {team_ids: [], admin_team_ids: [], department_ids: []}
+  riley:
+    id: riley
+    roles: [developer]
+    attr: {team_ids: [people-ops], admin_team_ids: [], department_ids: [people]}
+  casey:
+    id: casey
+    roles: [cost_center_admin]
+    attr: {team_ids: [], admin_team_ids: [], department_ids: [people]}
+  quinn:
+    id: quinn
+    roles: [finance_admin]
+    attr: {team_ids: [], admin_team_ids: [], department_ids: []}
+  # Not seeded: an api_key_approver who has left the Agents team. The role alone
+  # must grant nothing.
+  drew_former_agents:
+    id: drew
+    roles: [developer, api_key_approver]
+    attr: {team_ids: [platform], admin_team_ids: [], department_ids: [technology]}
+  # API keys as LiteLLM's Cerbos guard presents them (see cerbos/policies/model.yaml).
+  key_platform:
+    id: key:platform-demo
+    roles: [api_key]
+    attr: {owner_id: alex, team_id: platform, department_id: technology, asset_id: atlas}
+  key_agents:
+    id: key:agents-demo
+    roles: [api_key]
+    attr: {owner_id: sam, team_id: agents, department_id: technology, asset_id: insights}
+  # Multi-role principals: separation of duties must hold whatever else they are.
+  avery_also_developer:
+    id: avery
+    roles: [executive_admin, developer]
+    attr: {team_ids: [platform], admin_team_ids: [], department_ids: [technology]}
+  jordan_also_developer:
+    id: jordan
+    roles: [cost_center_admin, developer]
+    attr: {team_ids: [platform], admin_team_ids: [], department_ids: [technology]}
+  quinn_also_executive:
+    id: quinn
+    roles: [finance_admin, executive_admin]
+    attr: {team_ids: [], admin_team_ids: [], department_ids: []}
+  key_people:
+    id: key:people-demo
+    roles: [api_key]
+    attr: {owner_id: riley, team_id: people-ops, department_id: people, asset_id: people-assistant}

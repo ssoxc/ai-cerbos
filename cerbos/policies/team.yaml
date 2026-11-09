@@ -1,0 +1,61 @@
+apiVersion: api.cerbos.dev/v1
+# Teams and delegation of budget-proposal rights.
+resourcePolicy:
+  version: default
+  resource: team
+  rules:
+    - name: executives-and-finance-view-all
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin, finance_admin]
+      output:
+        when:
+          ruleActivated: '"Executive and finance admins see every team."'
+
+    - name: members-view-own-teams
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.id in request.principal.attr.team_ids
+      output:
+        when:
+          ruleActivated: '"Members see the teams they belong to."'
+
+    - name: cost-admins-view-department-teams
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Cost-center admins see the teams in their departments."'
+
+    - name: team-admins-delegate-budget-proposals
+      actions: [delegate_cost]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.id in request.principal.attr.admin_team_ids
+      output:
+        when:
+          ruleActivated: '"Developer admins grant or revoke budget-proposal rights in the teams they administer."'
+
+    # Separation of duties, whatever other roles the admin holds (see asset.yaml).
+    - name: admins-never-delegate
+      actions: [delegate_cost]
+      effect: EFFECT_DENY
+      roles: ["*"]
+      condition:
+        match:
+          expr: P.roles.exists(r, r in ['executive_admin', 'cost_center_admin', 'finance_admin'])
+      output:
+        when:
+          ruleActivated: '"Administrative roles never hand out builder rights, whatever other roles they hold."'

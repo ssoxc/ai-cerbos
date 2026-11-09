@@ -1,0 +1,38 @@
+---
+name: McpToolTestSuite
+description: MCP tool calls through LiteLLM's MCP gateway, decided per key and per tool risk.
+tests:
+  - name: Read tools are open, write tools belong to the owning team, destructive tools never
+    input:
+      principals: [key_platform, key_agents]
+      resources: [tool_search, tool_add_note, tool_delete]
+      actions: [call]
+    expected:
+      - principal: key_platform
+        resource: tool_search
+        actions: {call: EFFECT_ALLOW}
+      - principal: key_platform
+        resource: tool_add_note
+        actions: {call: EFFECT_DENY}
+      - principal: key_platform
+        resource: tool_delete
+        actions: {call: EFFECT_DENY}
+      - principal: key_agents
+        resource: tool_search
+        actions: {call: EFFECT_ALLOW}
+      - principal: key_agents
+        resource: tool_add_note
+        actions: {call: EFFECT_ALLOW}
+      - principal: key_agents
+        resource: tool_delete
+        actions: {call: EFFECT_DENY}
+
+  - name: People cannot call tools as if they were keys
+    input:
+      principals: [alex]
+      resources: [tool_search]
+      actions: [call]
+    expected:
+      - principal: alex
+        resource: tool_search
+        actions: {call: EFFECT_DENY}

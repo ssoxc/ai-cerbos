@@ -1,0 +1,25 @@
+apiVersion: api.cerbos.dev/v1
+# Operating units (departments).
+resourcePolicy:
+  version: default
+  resource: department
+  rules:
+    - name: executives-and-finance-view-all
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin, finance_admin]
+      output:
+        when:
+          ruleActivated: '"Executive and finance admins see every operating unit."'
+
+    - name: members-view-own-department
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin, cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Members see the operating units they belong to."'

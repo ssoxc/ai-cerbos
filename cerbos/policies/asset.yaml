@@ -1,0 +1,161 @@
+apiVersion: api.cerbos.dev/v1
+# AI agents, MCP servers and skills in the registry.
+# Every rule has a name and a plain-English output so the dashboard can explain
+# exactly which rule produced each decision.
+resourcePolicy:
+  version: default
+  resource: asset
+  rules:
+    # Separation of duties. Cerbos evaluates each role on its own, so a deny limited to
+    # admin roles would not stop an admin who also holds a builder role. Applying it to
+    # every role, conditioned on holding an admin role, makes it hold whatever else they are.
+    - name: admins-cannot-change-assets
+      actions: [create, edit, delete, request_budget, request_key, use]
+      effect: EFFECT_DENY
+      roles: ["*"]
+      condition:
+        match:
+          expr: P.roles.exists(r, r in ['executive_admin', 'cost_center_admin', 'finance_admin'])
+      output:
+        when:
+          ruleActivated: '"Executive, cost-center and finance admins oversee assets but never create, change or use them, whatever other roles they hold."'
+
+    - name: executives-view-everything
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin]
+      output:
+        when:
+          ruleActivated: '"Executive admins can view every asset in the organization."'
+
+    - name: cost-admins-view-own-departments
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Cost-center admins see assets in the departments they administer."'
+
+    - name: catalog-or-owner-can-view
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            (request.resource.attr.visibility == 'global' && request.resource.attr.status == 'active') || request.resource.attr.owner_id == request.principal.id
+      output:
+        when:
+          ruleActivated: '"Active global assets are in everyone''s catalog, and owners always see their own."'
+
+    - name: team-members-view-team-assets
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.team_id in request.principal.attr.team_ids
+      output:
+        when:
+          ruleActivated: '"Developers see every asset that belongs to one of their teams."'
+
+    - name: register-in-own-scope
+      actions: [create]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids && (request.resource.attr.team_id == '' || request.resource.attr.team_id in request.principal.attr.team_ids)
+      output:
+        when:
+          ruleActivated: '"Builders may register assets in their own department, personally or for a team they belong to."'
+
+    - name: owner-edits-own-asset
+      actions: [edit]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.owner_id == request.principal.id && request.resource.attr.status != 'archived'
+      output:
+        when:
+          ruleActivated: '"Owners may edit their own assets until they are archived."'
+
+    - name: team-members-edit-team-assets
+      actions: [edit]
+      effect: EFFECT_ALLOW
+      roles: [developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.team_id in request.principal.attr.team_ids && request.resource.attr.status != 'archived'
+      output:
+        when:
+          ruleActivated: '"Developers may edit any non-archived asset of a team they belong to."'
+
+    - name: owner-deletes-personal-asset
+      actions: [delete]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.owner_id == request.principal.id && request.resource.attr.team_id == '' && request.resource.attr.status != 'archived'
+      output:
+        when:
+          ruleActivated: '"Owners may delete personal assets. Shared team assets need a team administrator."'
+
+    - name: team-admin-deletes-team-asset
+      actions: [delete]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.team_id in request.principal.attr.admin_team_ids && request.resource.attr.status != 'archived'
+      output:
+        when:
+          ruleActivated: '"Developer admins may delete assets of the teams they administer."'
+
+    - name: team-admin-proposes-budget
+      actions: [request_budget]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.team_id in request.principal.attr.admin_team_ids && request.resource.attr.status == 'active' && request.resource.attr.kind == 'agent'
+      output:
+        when:
+          ruleActivated: '"Developer admins may propose budget changes for active agents of their admin teams."'
+
+    - name: delegated-member-proposes-budget
+      actions: [request_budget]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer]
+      condition:
+        match:
+          expr: >-
+            request.principal.id in request.resource.attr.cost_editor_ids && request.resource.attr.team_id in request.principal.attr.team_ids && request.resource.attr.status == 'active' && request.resource.attr.kind == 'agent'
+      output:
+        when:
+          ruleActivated: '"This team member was delegated budget-proposal rights by a team admin."'
+
+    - name: team-or-owner-uses-active-agent
+      actions: [request_key, use]
+      effect: EFFECT_ALLOW
+      roles: [developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.status == 'active' && request.resource.attr.kind == 'agent' && (request.resource.attr.team_id in request.principal.attr.team_ids || (request.resource.attr.team_id == '' && request.resource.attr.owner_id == request.principal.id))
+      output:
+        when:
+          ruleActivated: '"Developers may request keys for and use active agents of their team, or their own personal agents."'

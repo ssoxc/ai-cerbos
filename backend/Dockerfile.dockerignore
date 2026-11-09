@@ -1,0 +1,15 @@
+# The backend image is built from the repository root. Send only what it copies.
+*
+!backend/requirements.txt
+!backend/requirements-dev.txt
+!backend/pyproject.toml
+!backend/alembic.ini
+!backend/app
+!backend/migrations
+!backend/tests
+!cerbos/policies
+!scripts/test.py
+!scripts/smoke.py
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache

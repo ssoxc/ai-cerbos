@@ -1,0 +1,45 @@
+apiVersion: api.cerbos.dev/v1
+# MCP tool calls, enforced INSIDE LiteLLM's MCP gateway by infra/cerbos_guard.py.
+#
+# The principal is the calling API key (role api_key). The resource is one tool on one
+# MCP server, with its risk taken from the tool's standard MCP annotations
+# (readOnlyHint / destructiveHint) and the team that owns the server in the registry.
+#
+# Try it: change write-tools-for-owning-team to allow every key, or remove the deny
+# rule, and watch the LiteLLM tool-call results change immediately.
+resourcePolicy:
+  version: default
+  resource: mcp_tool
+  rules:
+    - name: read-tools-for-every-key
+      actions: [call]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.risk == 'read'
+      output:
+        when:
+          ruleActivated: '{"effect": "allow", "reason": "Read-only tools are open to every approved key."}'
+
+    - name: write-tools-for-owning-team
+      actions: [call]
+      effect: EFFECT_ALLOW
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.risk == 'write' && P.attr.team_id == R.attr.owner_team
+      output:
+        when:
+          ruleActivated: '{"effect": "allow", "reason": "Keys of the team that owns this MCP server may change its data."}'
+
+    - name: destructive-tools-need-a-person
+      actions: [call]
+      effect: EFFECT_DENY
+      roles: [api_key]
+      condition:
+        match:
+          expr: R.attr.risk == 'destructive'
+      output:
+        when:
+          ruleActivated: '{"effect": "deny", "reason": "Destructive tools are never available to API keys; a person must do this."}'

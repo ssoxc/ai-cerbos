@@ -1,0 +1,49 @@
+apiVersion: api.cerbos.dev/v1
+# Entries in the audit log.
+resourcePolicy:
+  version: default
+  resource: audit
+  rules:
+    - name: executives-and-finance-read-all
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin, finance_admin]
+      output:
+        when:
+          ruleActivated: '"Executive and finance admins read the full audit log."'
+
+    - name: builders-read-own-actions
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.actor_id == request.principal.id
+      output:
+        when:
+          ruleActivated: '"Builders see the audit entries for their own actions."'
+
+    - name: team-admins-read-team-activity
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.actor_id == request.principal.id || request.resource.attr.team_id in request.principal.attr.admin_team_ids
+      output:
+        when:
+          ruleActivated: '"Developer admins see their own actions and everything in the teams they administer."'
+
+    - name: cost-admins-read-department-activity
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Cost-center admins see activity in the departments they administer."'

@@ -1,0 +1,114 @@
+---
+name: BudgetTestSuite
+description: The organization cap belongs to finance; department and team caps to their cost center admin.
+tests:
+  - name: Cost center admins cannot edit the organization budget
+    input:
+      principals: [jordan, casey]
+      resources: [budget_organization]
+      actions: [view, edit]
+    expected:
+      - principal: jordan
+        resource: budget_organization
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: casey
+        resource: budget_organization
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+
+  - name: Finance admins edit the organization budget only
+    input:
+      principals: [quinn]
+      resources: [budget_organization, budget_technology, budget_platform, budget_atlas]
+      actions: [view, edit]
+    expected:
+      - principal: quinn
+        resource: budget_organization
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_ALLOW}
+      - principal: quinn
+        resource: budget_technology
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}
+      - principal: quinn
+        resource: budget_platform
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}
+      - principal: quinn
+        resource: budget_atlas
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}
+
+  - name: Cost center admins set department and team caps in their departments
+    input:
+      principals: [jordan, casey]
+      resources: [budget_technology, budget_platform, budget_people, budget_atlas]
+      actions: [view, edit]
+    expected:
+      - principal: jordan
+        resource: budget_technology
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_ALLOW}
+      - principal: jordan
+        resource: budget_platform
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_ALLOW}
+      - principal: jordan
+        resource: budget_people
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      # Agent caps go through the approval workflow, never a direct edit.
+      - principal: jordan
+        resource: budget_atlas
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}
+      - principal: casey
+        resource: budget_technology
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: casey
+        resource: budget_platform
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: casey
+        resource: budget_people
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_ALLOW}
+      - principal: casey
+        resource: budget_atlas
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+
+  - name: Executive admins view but never edit budgets
+    input:
+      principals: [avery]
+      resources: [budget_organization, budget_technology]
+      actions: [view, edit]
+    expected:
+      - principal: avery
+        resource: budget_organization
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}
+      - principal: avery
+        resource: budget_technology
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}
+
+  - name: Builders never edit budgets; developer admins view their admin teams
+    input:
+      principals: [maya, alex, morgan]
+      resources: [budget_organization, budget_platform, budget_atlas]
+      actions: [view, edit]
+    expected:
+      - principal: maya
+        resource: budget_organization
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: maya
+        resource: budget_platform
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: maya
+        resource: budget_atlas
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: alex
+        resource: budget_organization
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: alex
+        resource: budget_platform
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: alex
+        resource: budget_atlas
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: morgan
+        resource: budget_organization
+        actions: {view: EFFECT_DENY, edit: EFFECT_DENY}
+      - principal: morgan
+        resource: budget_platform
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}
+      - principal: morgan
+        resource: budget_atlas
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY}

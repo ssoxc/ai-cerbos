@@ -1,0 +1,85 @@
+---
+name: ApiKeyTestSuite
+description: API key ownership, admin-team scope and the Agents-team requirement for api_key_approver.
+tests:
+  - name: Owners view, claim and revoke their own keys only
+    input:
+      principals: [alex, riley]
+      resources: [key_atlas, key_people]
+      actions: [view, claim, revoke]
+    expected:
+      - principal: alex
+        resource: key_atlas
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_ALLOW, revoke: EFFECT_ALLOW}
+      - principal: alex
+        resource: key_people
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: riley
+        resource: key_atlas
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: riley
+        resource: key_people
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_ALLOW, revoke: EFFECT_ALLOW}
+
+  - name: Developer admins view and revoke keys of their admin teams but cannot claim them
+    input:
+      principals: [morgan]
+      resources: [key_atlas, key_people]
+      actions: [view, claim, revoke]
+    expected:
+      - principal: morgan
+        resource: key_atlas
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_DENY, revoke: EFFECT_ALLOW}
+      - principal: morgan
+        resource: key_people
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+
+  - name: api_key_approver works across departments only while in the Agents team
+    input:
+      principals: [sam, drew_former_agents]
+      resources: [key_atlas, key_people]
+      actions: [view, claim, revoke]
+    expected:
+      - principal: sam
+        resource: key_atlas
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_DENY, revoke: EFFECT_ALLOW}
+      - principal: sam
+        resource: key_people
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_DENY, revoke: EFFECT_ALLOW}
+      - principal: drew_former_agents
+        resource: key_atlas
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: drew_former_agents
+        resource: key_people
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+
+  - name: Administrative roles may view in scope but never claim or revoke
+    input:
+      principals: [avery, jordan, casey, quinn]
+      resources: [key_atlas, key_people]
+      actions: [view, claim, revoke]
+    expected:
+      - principal: avery
+        resource: key_atlas
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: avery
+        resource: key_people
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: jordan
+        resource: key_atlas
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: jordan
+        resource: key_people
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: casey
+        resource: key_atlas
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: casey
+        resource: key_people
+        actions: {view: EFFECT_ALLOW, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: quinn
+        resource: key_atlas
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}
+      - principal: quinn
+        resource: key_people
+        actions: {view: EFFECT_DENY, claim: EFFECT_DENY, revoke: EFFECT_DENY}

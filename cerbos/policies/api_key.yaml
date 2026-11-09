@@ -1,0 +1,73 @@
+apiVersion: api.cerbos.dev/v1
+# Issued LiteLLM virtual keys.
+resourcePolicy:
+  version: default
+  resource: api_key
+  rules:
+    - name: owner-manages-own-key
+      actions: [view, claim, revoke]
+      effect: EFFECT_ALLOW
+      roles: [developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.owner_id == request.principal.id
+      output:
+        when:
+          ruleActivated: '"Key owners may view, reveal once and revoke their own keys."'
+
+    - name: team-admin-oversees-team-keys
+      actions: [view, revoke]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.team_id in request.principal.attr.admin_team_ids
+      output:
+        when:
+          ruleActivated: '"Developer admins may view and revoke keys of the teams they administer, but never reveal them."'
+
+    - name: agents-team-approvers-oversee-keys
+      actions: [view, revoke]
+      effect: EFFECT_ALLOW
+      roles: [api_key_approver]
+      condition:
+        match:
+          expr: >-
+            'agents' in request.principal.attr.team_ids
+      output:
+        when:
+          ruleActivated: '"API key approvers in the Agents team may view and revoke any key."'
+
+    - name: cost-admins-view-department-keys
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Cost-center admins see keys in the departments they administer."'
+
+    - name: executives-view-all-keys
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin]
+      output:
+        when:
+          ruleActivated: '"Executive admins can see every key."'
+
+    # Separation of duties, whatever other roles the admin holds (see asset.yaml).
+    - name: admins-never-hold-keys
+      actions: [claim, revoke]
+      effect: EFFECT_DENY
+      roles: ["*"]
+      condition:
+        match:
+          expr: P.roles.exists(r, r in ['executive_admin', 'cost_center_admin', 'finance_admin'])
+      output:
+        when:
+          ruleActivated: '"Administrative roles never reveal or revoke builder keys, whatever other roles they hold."'

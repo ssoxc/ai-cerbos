@@ -1,0 +1,39 @@
+---
+name: SeparationOfDutiesTestSuite
+description: Admin denies hold for people who also hold a builder role (Cerbos evaluates roles independently).
+tests:
+  - name: An executive who is also a developer still cannot change or use assets
+    input:
+      principals: [avery_also_developer, jordan_also_developer]
+      resources: [atlas]
+      actions: [view, edit, delete, request_key, use]
+    expected:
+      - principal: avery_also_developer
+        resource: atlas
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY, delete: EFFECT_DENY, request_key: EFFECT_DENY, use: EFFECT_DENY}
+      - principal: jordan_also_developer
+        resource: atlas
+        actions: {view: EFFECT_ALLOW, edit: EFFECT_DENY, delete: EFFECT_DENY, request_key: EFFECT_DENY, use: EFFECT_DENY}
+
+  - name: Admins who are also developers never reveal or revoke builder keys
+    input:
+      principals: [avery_also_developer]
+      resources: [key_atlas]
+      actions: [claim, revoke]
+    expected:
+      - principal: avery_also_developer
+        resource: key_atlas
+        actions: {claim: EFFECT_DENY, revoke: EFFECT_DENY}
+
+  - name: A finance admin who is also an executive loses the organization cap
+    input:
+      principals: [quinn_also_executive]
+      resources: [budget_organization, request_atlas_budget]
+      actions: [edit, approve]
+    expected:
+      - principal: quinn_also_executive
+        resource: budget_organization
+        actions: {edit: EFFECT_DENY, approve: EFFECT_DENY}
+      - principal: quinn_also_executive
+        resource: request_atlas_budget
+        actions: {edit: EFFECT_DENY, approve: EFFECT_DENY}

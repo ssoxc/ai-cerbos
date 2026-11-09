@@ -1,0 +1,14 @@
+# Developer overlay: publish internal services on localhost so tests and tools can run
+# from the host (for example `backend/.venv/bin/python scripts/test.py`).
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d --build --wait
+#
+# The demo itself (`python3 scripts/demo.py start`) does not use this file, so a local
+# Postgres or anything else on these ports never conflicts with it.
+services:
+  postgres:
+    ports: ["127.0.0.1:5432:5432"]
+  cerbos:
+    ports: ["127.0.0.1:3592:3592"]
+  api:
+    ports: ["127.0.0.1:18000:8000"]

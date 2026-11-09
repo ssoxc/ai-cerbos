@@ -1,0 +1,164 @@
+# One command: `python3 scripts/demo.py start`. Only the dashboard is published, on
+# http://localhost:${DEMO_PORT:-5173}. For host access to Postgres, Cerbos and the API
+# while developing, add `-f compose.dev.yaml` (see that file).
+name: ai-cerbos
+
+x-backend-build: &backend-build
+  context: .
+  dockerfile: backend/Dockerfile
+  target: runtime
+
+services:
+  postgres:
+    image: ai-cerbos-postgres:latest
+    build:
+      context: .
+      dockerfile: infra/postgres.Dockerfile
+    environment:
+      POSTGRES_USER: cerbos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python3 scripts/demo.py start}
+      POSTGRES_DB: cerbos
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cerbos -d cerbos"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  cerbos:
+    image: ai-cerbos-cerbos:latest
+    build: ./cerbos
+    command: ["server", "--config=/config/config.yaml"]
+    volumes:
+      # Live policies, edited from the dashboard's Cerbos playground. Read-only here:
+      # only the API writes, after validating with the Cerbos CLI.
+      - policies_live:/policies:ro
+    healthcheck:
+      # The image has no shell; the binary ships its own health probe.
+      test: ["CMD", "/cerbos", "healthcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mock-provider:
+    image: ai-cerbos-api:latest
+    build: *backend-build
+    command: ["uvicorn", "app.mock_provider:app", "--host", "0.0.0.0", "--port", "8081"]
+    environment:
+      MOCK_PROVIDER_KEY: ${MOCK_PROVIDER_KEY}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # The "Knowledge base" MCP server from the registry, reachable only through LiteLLM.
+  knowledge-mcp:
+    image: ai-cerbos-api:latest
+    build: *backend-build
+    command: ["python", "-m", "app.mcp_demo"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8082), 2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  litellm:
+    image: ai-cerbos-litellm:latest
+    build:
+      context: .
+      dockerfile: infra/litellm.Dockerfile
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      DATABASE_URL: postgresql://cerbos:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      MOCK_PROVIDER_KEY: ${MOCK_PROVIDER_KEY}
+      STORE_MODEL_IN_DB: "False"
+      # infra/cerbos_guard.py asks Cerbos before every model call.
+      CERBOS_URL: http://cerbos:3592
+    depends_on:
+      postgres: {condition: service_healthy}
+      cerbos: {condition: service_healthy}
+      mock-provider: {condition: service_healthy}
+      knowledge-mcp: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    # Intentionally no host port: projects must pass through the governed API.
+
+  api:
+    image: ai-cerbos-api:latest
+    build: *backend-build
+    environment:
+      DATABASE_URL: postgresql+psycopg://cerbos:${POSTGRES_PASSWORD}@postgres:5432/cerbos
+      CERBOS_URL: http://cerbos:3592
+      LITELLM_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      DEMO_MODE: ${DEMO_MODE:-true}
+      ALLOWED_ORIGIN: http://localhost:${DEMO_PORT:-5173}
+      POLICIES_DIR: /policies
+      SHIPPED_POLICIES_DIR: /app/shipped-policies
+    volumes:
+      - policies_live:/policies
+    depends_on:
+      postgres: {condition: service_healthy}
+      cerbos: {condition: service_healthy}
+      litellm: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  frontend:
+    image: ai-cerbos-frontend:latest
+    build: ./frontend
+    ports: ["127.0.0.1:${DEMO_PORT:-5173}:80"]
+    depends_on:
+      api: {condition: service_healthy}
+
+  # --- Test profile: `python3 scripts/demo.py test` --------------------------------------
+  # A separate Cerbos with the shipped, baked-in policies, so browser edits to the live
+  # policies can never change test outcomes.
+  cerbos-test:
+    profiles: [test]
+    image: ai-cerbos-cerbos:latest
+    build: ./cerbos
+    command: ["server", "--config=/config/config.yaml"]
+    healthcheck:
+      test: ["CMD", "/cerbos", "healthcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  tests:
+    profiles: [test]
+    image: ai-cerbos-api-test:latest
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: test
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      CERBOS_URL: http://cerbos-test:3592
+      POLICIES_DIR: /app/shipped-policies
+      SHIPPED_POLICIES_DIR: /app/shipped-policies
+      SESSION_SECRET: ${SESSION_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      MOCK_PROVIDER_KEY: ${MOCK_PROVIDER_KEY}
+      # Used by scripts/smoke.py, which drives the running demo through its web server.
+      BASE_URL: http://frontend
+    depends_on:
+      postgres: {condition: service_healthy}
+      cerbos-test: {condition: service_healthy}
+
+volumes:
+  postgres_data:
+  policies_live:

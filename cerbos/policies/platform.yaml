@@ -1,0 +1,53 @@
+apiVersion: api.cerbos.dev/v1
+# Workspace-wide capabilities that decide which areas of the dashboard appear.
+resourcePolicy:
+  version: default
+  resource: platform
+  rules:
+    - name: key-area-for-builders-and-overseers
+      actions: [view_keys]
+      effect: EFFECT_ALLOW
+      roles: [developer, developer_admin, cost_center_admin, executive_admin, api_key_approver]
+      output:
+        when:
+          ruleActivated: '"This role works with API keys, so the API keys area is shown."'
+
+    - name: finance-areas-for-admins
+      actions: [view_budgets, view_organization]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin, cost_center_admin, executive_admin, finance_admin]
+      output:
+        when:
+          ruleActivated: '"Administrative roles see budgets and the organization structure."'
+
+    - name: audit-and-policies-for-everyone
+      actions: [view_audit, view_policies]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin, cost_center_admin, executive_admin, finance_admin]
+      output:
+        when:
+          ruleActivated: '"Everyone may read the audit log (filtered per entry) and the access policies."'
+
+    - name: executives-shape-the-organization
+      actions: [create_department, assign_cost_admin]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin]
+      output:
+        when:
+          ruleActivated: '"Only executive admins create operating units and appoint cost-center admins."'
+
+    - name: builders-register-assets
+      actions: [register_asset]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin]
+      output:
+        when:
+          ruleActivated: '"Builders and viewers may submit new assets for approval."'
+
+    - name: developers-request-keys
+      actions: [request_key]
+      effect: EFFECT_ALLOW
+      roles: [developer, developer_admin]
+      output:
+        when:
+          ruleActivated: '"Developers may request API keys for approved agents."'

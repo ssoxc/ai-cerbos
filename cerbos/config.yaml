@@ -1,0 +1,17 @@
+server:
+  httpListenAddr: ":3592"
+  grpcListenAddr: ":3593"
+storage:
+  driver: disk
+  disk:
+    # Live policies. The API validates edits with the Cerbos CLI and writes them here;
+    # Cerbos reloads them automatically. Test files and testdata are ignored by the store.
+    directory: /policies
+    watchForChanges: true
+audit:
+  enabled: true
+  accessLogsEnabled: true
+  decisionLogsEnabled: true
+  backend: local
+  local:
+    storagePath: /tmp/cerbos-audit

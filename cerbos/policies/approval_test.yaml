@@ -1,0 +1,138 @@
+---
+name: ApprovalTestSuite
+description: Approval decisions are scoped, decided once and never self-approved.
+tests:
+  - name: Self-approval is denied
+    input:
+      principals: [sam]
+      resources: [request_sam_key, request_atlas_key]
+      actions: [approve, decline]
+    expected:
+      - principal: sam
+        resource: request_sam_key
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: sam
+        resource: request_atlas_key
+        actions: {approve: EFFECT_ALLOW, decline: EFFECT_ALLOW}
+
+  - name: Approval of a non-pending request is denied
+    input:
+      principals: [jordan, sam, casey]
+      resources: [request_atlas_budget_approved, request_atlas_key_declined, request_people_budget]
+      actions: [approve, decline]
+    expected:
+      - principal: jordan
+        resource: request_atlas_budget_approved
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: jordan
+        resource: request_atlas_key_declined
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: jordan
+        resource: request_people_budget
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: sam
+        resource: request_atlas_budget_approved
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: sam
+        resource: request_atlas_key_declined
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: sam
+        resource: request_people_budget
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: casey
+        resource: request_atlas_budget_approved
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: casey
+        resource: request_atlas_key_declined
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: casey
+        resource: request_people_budget
+        actions: {approve: EFFECT_DENY, decline: EFFECT_DENY}
+
+  - name: Cost center admins decide asset and budget requests in their departments only
+    input:
+      principals: [jordan, casey]
+      resources: [request_release, request_atlas_budget, request_atlas_key]
+      actions: [view, approve]
+    expected:
+      - principal: jordan
+        resource: request_release
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_ALLOW}
+      - principal: jordan
+        resource: request_atlas_budget
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_ALLOW}
+      - principal: jordan
+        resource: request_atlas_key
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_DENY}
+      - principal: casey
+        resource: request_release
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+      - principal: casey
+        resource: request_atlas_budget
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+      - principal: casey
+        resource: request_atlas_key
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+
+  - name: api_key_approver needs Agents team membership and only covers key requests
+    input:
+      principals: [sam, drew_former_agents]
+      resources: [request_atlas_key, request_atlas_budget]
+      actions: [view, approve]
+    expected:
+      - principal: sam
+        resource: request_atlas_key
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_ALLOW}
+      - principal: sam
+        resource: request_atlas_budget
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+      - principal: drew_former_agents
+        resource: request_atlas_key
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+      - principal: drew_former_agents
+        resource: request_atlas_budget
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+
+  - name: Executive and finance admins never decide requests
+    input:
+      principals: [avery, quinn]
+      resources: [request_release, request_atlas_key]
+      actions: [view, approve, decline]
+    expected:
+      - principal: avery
+        resource: request_release
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: avery
+        resource: request_atlas_key
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: quinn
+        resource: request_release
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY, decline: EFFECT_DENY}
+      - principal: quinn
+        resource: request_atlas_key
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY, decline: EFFECT_DENY}
+
+  - name: Builders see their own requests; developer admins see their admin teams
+    input:
+      principals: [maya, alex, morgan]
+      resources: [request_release, request_atlas_key]
+      actions: [view, approve]
+    expected:
+      - principal: maya
+        resource: request_release
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_DENY}
+      - principal: maya
+        resource: request_atlas_key
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+      - principal: alex
+        resource: request_release
+        actions: {view: EFFECT_DENY, approve: EFFECT_DENY}
+      - principal: alex
+        resource: request_atlas_key
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_DENY}
+      - principal: morgan
+        resource: request_release
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_DENY}
+      - principal: morgan
+        resource: request_atlas_key
+        actions: {view: EFFECT_ALLOW, approve: EFFECT_DENY}

@@ -1,0 +1,97 @@
+apiVersion: api.cerbos.dev/v1
+# Review requests: asset registrations, agent budget changes and API key requests.
+resourcePolicy:
+  version: default
+  resource: approval
+  rules:
+    - name: no-self-approval-or-reopening
+      actions: [approve, decline]
+      effect: EFFECT_DENY
+      roles: ["*"]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.requester_id == request.principal.id || request.resource.attr.status != 'pending'
+      output:
+        when:
+          ruleActivated: '"Nobody may decide their own request, and a request is decided only once."'
+
+    # Separation of duties, whatever other roles they hold (see asset.yaml).
+    - name: executives-and-finance-never-decide
+      actions: [approve, decline]
+      effect: EFFECT_DENY
+      roles: ["*"]
+      condition:
+        match:
+          expr: P.roles.exists(r, r in ['executive_admin', 'finance_admin'])
+      output:
+        when:
+          ruleActivated: '"Executive and finance admins oversee approvals but do not decide them, whatever other roles they hold."'
+
+    - name: executives-view-all-requests
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [executive_admin]
+      output:
+        when:
+          ruleActivated: '"Executive admins can see every request."'
+
+    - name: requesters-view-own-requests
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [viewer, developer, developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.requester_id == request.principal.id
+      output:
+        when:
+          ruleActivated: '"Requesters can follow their own requests."'
+
+    - name: team-admins-view-team-requests
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [developer_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.team_id in request.principal.attr.admin_team_ids
+      output:
+        when:
+          ruleActivated: '"Developer admins see requests for the teams they administer."'
+
+    - name: cost-admins-view-department-requests
+      actions: [view]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids
+      output:
+        when:
+          ruleActivated: '"Cost-center admins see requests from the departments they administer."'
+
+    - name: cost-admins-decide-assets-and-budgets
+      actions: [approve, decline]
+      effect: EFFECT_ALLOW
+      roles: [cost_center_admin]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.department_id in request.principal.attr.department_ids && request.resource.attr.kind in ['asset', 'budget']
+      output:
+        when:
+          ruleActivated: '"Cost-center admins decide asset and budget requests in their own departments only."'
+
+    - name: agents-team-key-approvers-decide-keys
+      actions: [view, approve, decline]
+      effect: EFFECT_ALLOW
+      roles: [api_key_approver]
+      condition:
+        match:
+          expr: >-
+            request.resource.attr.kind == 'key' && 'agents' in request.principal.attr.team_ids
+      output:
+        when:
+          ruleActivated: '"API key approvers decide key requests across departments, but only while they are in the Agents team."'
